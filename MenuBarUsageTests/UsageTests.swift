@@ -183,6 +183,7 @@ final class UsagePresenterTests: XCTestCase {
         let image = try XCTUnwrap(both)
         let cpuImage = try XCTUnwrap(cpuOnly)
         XCTAssertTrue(image.isTemplate)
+        XCTAssertGreaterThan(image.size.height, 16)
         XCTAssertGreaterThan(image.size.width, cpuImage.size.width + 24)
         let columns = opaqueColumns(image)
         let first = try XCTUnwrap(columns.first)
