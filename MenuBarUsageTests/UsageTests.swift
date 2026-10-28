@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import MenuBarUsage
@@ -174,6 +175,36 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertEqual(memoryOnly.tokens().map(\.text), ["68%"])
 
         XCTAssertTrue(UsageFormatting.statusItem(cpu: nil, memory: nil).tokens().isEmpty)
+    }
+
+    func testStatusItemImageDrawsBothSymbolsAndBothPercents() throws {
+        let both = StatusItemArtwork.image(for: UsageFormatting.statusItem(cpu: 36, memory: 68))
+        let cpuOnly = StatusItemArtwork.image(for: UsageFormatting.statusItem(cpu: 36, memory: nil))
+        let image = try XCTUnwrap(both)
+        let cpuImage = try XCTUnwrap(cpuOnly)
+        XCTAssertTrue(image.isTemplate)
+        XCTAssertGreaterThan(image.size.width, cpuImage.size.width + 24)
+        let columns = opaqueColumns(image)
+        let first = try XCTUnwrap(columns.first)
+        let last = try XCTUnwrap(columns.last)
+        XCTAssertLessThan(first, Int(image.size.width * 0.25))
+        XCTAssertGreaterThan(last, Int(image.size.width * 0.7))
+    }
+
+    private func opaqueColumns(_ image: NSImage) -> [Int] {
+        guard let data = image.tiffRepresentation, let rep = NSBitmapImageRep(data: data) else { return [] }
+        var columns: [Int] = []
+        for x in 0..<rep.pixelsWide {
+            var marked = false
+            for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+                if let color = rep.colorAt(x: x, y: y), color.alphaComponent > 0.15 {
+                    marked = true
+                    break
+                }
+            }
+            if marked { columns.append(x) }
+        }
+        return columns
     }
 
     func testPlanName() {
