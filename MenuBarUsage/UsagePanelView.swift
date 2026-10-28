@@ -59,11 +59,16 @@ struct UsagePanelView: View {
                     .font(.callout.weight(.semibold))
                     .monospacedDigit()
             }
-            LevelSparkline(values: content.cpuHistory, height: 26, filled: true)
+            Text("All cores")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if content.cpuHistory.count >= 2 {
+                LevelSparkline(values: content.cpuHistory, height: 26, filled: true)
+            }
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(content.cpuPercent == nil ? "CPU, unavailable" : "CPU, \(cpuText)")
+        .accessibilityLabel(content.cpuPercent == nil ? "CPU, unavailable, All cores" : "CPU, \(cpuText), All cores")
     }
 
     private var cpuText: String {
@@ -86,7 +91,9 @@ struct UsagePanelView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            LevelSparkline(values: content.memoryHistory, height: 26, filled: true)
+            if content.memoryHistory.count >= 2 {
+                LevelSparkline(values: content.memoryHistory, height: 26, filled: true)
+            }
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .ignore)
@@ -254,7 +261,7 @@ struct UsagePanelView: View {
                 }
                 .disabled(content.isRefreshing)
                 Spacer(minLength: 0)
-                Button("Dashboard", action: actions.openDashboard)
+                Button("Activity Monitor", action: actions.openActivityMonitor)
                 Button("Quit", action: actions.quit)
             }
             .controlSize(.small)
@@ -273,7 +280,7 @@ struct UsagePanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             DisclosureGroup(content.hasPastedToken ? "Pasted session token" : "Paste a session token") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Stored in the login Keychain on this Mac.")
+                    Text("Saved only in this Mac's login Keychain. It is not written into the app or the repo.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -315,10 +322,14 @@ struct UsagePanelView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Text("Usage percentages stay blank until a real session answers. Nothing is filled in as a guess.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 Button("Open Cursor", action: actions.openCursor)
                     .buttonStyle(.borderedProminent)
-                Button("Dashboard", action: actions.openDashboard)
+                Button("Usage dashboard", action: actions.openDashboard)
                     .buttonStyle(.bordered)
             }
             .controlSize(.small)
@@ -453,19 +464,11 @@ private struct DualSparkline: View {
 
 private struct LevelSparkline: View {
     var values: [Double]
-    var color: Color = .accentColor
     var height: CGFloat = 18
     var filled: Bool = false
 
     var body: some View {
         Canvas { context, size in
-            if filled, values.count < 2 {
-                var axis = Path()
-                let y = size.height - 0.5
-                axis.move(to: CGPoint(x: 0, y: y))
-                axis.addLine(to: CGPoint(x: size.width, y: y))
-                context.stroke(axis, with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
-            }
             guard values.count >= 2 else { return }
             var line = Path()
             let last = CGFloat(values.count - 1)
@@ -480,12 +483,12 @@ private struct LevelSparkline: View {
                 area.addLine(to: CGPoint(x: size.width, y: size.height))
                 area.addLine(to: CGPoint(x: 0, y: size.height))
                 area.closeSubpath()
-                context.fill(area, with: .color(color.opacity(0.18)))
+                context.fill(area, with: .color(Color.accentColor.opacity(0.18)))
             }
             let lineWidth: CGFloat = filled ? 1.5 : 1.25
             context.stroke(
                 line,
-                with: .color(color),
+                with: .color(Color.accentColor),
                 style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
             )
         }
@@ -518,7 +521,7 @@ private struct LevelSparkline: View {
             sessionLabel: "Cursor",
             hasPastedToken: false
         ),
-        actions: PanelActions(refresh: {}, quit: {}, openCursor: {}, openDashboard: {}, saveToken: { _ in nil }, forgetToken: {})
+        actions: PanelActions(refresh: {}, quit: {}, openCursor: {}, openDashboard: {}, openActivityMonitor: {}, saveToken: { _ in nil }, forgetToken: {})
     )
 }
 
@@ -535,6 +538,6 @@ private struct LevelSparkline: View {
             isRefreshing: false,
             hasPastedToken: false
         ),
-        actions: PanelActions(refresh: {}, quit: {}, openCursor: {}, openDashboard: {}, saveToken: { _ in nil }, forgetToken: {})
+        actions: PanelActions(refresh: {}, quit: {}, openCursor: {}, openDashboard: {}, openActivityMonitor: {}, saveToken: { _ in nil }, forgetToken: {})
     )
 }
