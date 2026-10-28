@@ -480,8 +480,8 @@ enum UsageFormatting {
 enum UsagePresenter {
     /// The X Subscription's included Cursor-model pool is weekly and shared by
     /// Cursor and Grok Bot, so those plans show one included row. Legacy plans
-    /// keep Grok Bot and Cursor models as separate rows. Third-party model
-    /// usage is not shown.
+    /// keep Grok Bot and Cursor models separate. Other models is shown only
+    /// when that pool is actually separate.
     static func present(_ facts: UsageFacts) -> UsagePresentation {
         let plan = PlanName.format(facts.membershipType) ?? facts.planLabel
         if facts.isUnlimited {
@@ -532,7 +532,7 @@ enum UsagePresenter {
             return nil
         }()
         let reset = facts.weeklyReset ?? grokReset ?? facts.billingCycleEnd
-        let rows = [
+        var rows = [
             UsageRow(
                 id: "included",
                 title: "Included AI usage",
@@ -541,6 +541,9 @@ enum UsagePresenter {
                 resetsAt: reset
             )
         ]
+        if let other = otherRow(facts, shared: true, included: percent) {
+            rows.append(other)
+        }
         return UsagePresentation(
             planName: plan,
             note: "One included pool, shared by Cursor and Grok Bot.",
@@ -579,6 +582,9 @@ enum UsagePresenter {
                 resetsAt: facts.billingCycleEnd
             ))
         }
+        if let other = otherRow(facts, shared: false, included: nil) {
+            rows.append(other)
+        }
         if facts.autoPercent == nil, facts.apiPercent == nil {
             rows.append(UsageRow(
                 id: "included",
@@ -607,5 +613,25 @@ enum UsagePresenter {
         let summaryEmpty = summary.allSatisfy { ($0 ?? 0) < 0.05 }
         if facts.includedPeriodWeekly, summaryEmpty { return nil }
         return facts.totalPercent ?? facts.autoPercent
+    }
+
+    /// Same visibility rules as before the subtitle was removed. The detail
+    /// stays empty so the panel shows the percent, bar, and reset only.
+    private static func otherRow(_ facts: UsageFacts, shared: Bool, included: Double?) -> UsageRow? {
+        guard let api = facts.apiPercent, api.isFinite else { return nil }
+        if shared {
+            guard let included else { return nil }
+            let auto = facts.autoPercent ?? 0
+            let stubZero = api < 0.05 && auto < 0.05 && included > 0.5
+            if stubZero { return nil }
+            if abs(api - included) < 0.5, abs(auto - api) < 0.5 { return nil }
+        }
+        return UsageRow(
+            id: "other",
+            title: "Other models",
+            detail: "",
+            percent: api,
+            resetsAt: facts.billingCycleEnd
+        )
     }
 }
