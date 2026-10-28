@@ -13,7 +13,7 @@ struct UsagePanelView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().opacity(0.6)
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 sectionTitle("This Mac")
                 machineCard(
                     symbol: "cpu",
@@ -29,6 +29,10 @@ struct UsagePanelView: View {
                     detail: memoryDetail,
                     percent: content.memoryPercent
                 )
+                networkRow
+                if content.battery != nil {
+                    batteryRow
+                }
 
                 sectionTitle("AI usage")
                 if let authMessage = content.authMessage {
@@ -59,6 +63,89 @@ struct UsagePanelView: View {
 
     private var panelBackground: Color {
         Color(nsColor: colorScheme == .dark ? .windowBackgroundColor : .windowBackgroundColor)
+    }
+
+    private var networkRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text("Network")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                Text(downLabel)
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                Text(upLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            if content.networkDownHistory.count >= 2, content.networkUpHistory.count >= 2 {
+                DualSparkline(down: content.networkDownHistory, up: content.networkUpHistory)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(cardStroke)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Network, down \(downLabel), up \(upLabel)")
+    }
+
+    private var downLabel: String {
+        content.networkDown.map { "↓ \(Throughput.rate($0))" } ?? "↓ —"
+    }
+
+    private var upLabel: String {
+        content.networkUp.map { "↑ \(Throughput.rate($0))" } ?? "↑ —"
+    }
+
+    private var batteryRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: batterySymbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text("Battery")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                Text(content.battery.map { UsageFormatting.menuPercent($0.percent) } ?? "—")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                if let source = content.battery?.source.label {
+                    Text(source)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let caption = content.battery?.timeCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if content.batteryHistory.count >= 2 {
+                LevelSparkline(values: content.batteryHistory)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(cardStroke)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var batterySymbol: String {
+        switch content.battery?.source {
+        case .charging: return "bolt.fill"
+        case .powerAdapter: return "powerplug"
+        case .battery, nil: return "battery.100"
+        }
     }
 
     private var memoryDetail: String {
@@ -352,16 +439,79 @@ struct UsageBar: View {
     }
 }
 
+private struct DualSparkline: View {
+    var down: [Double]
+    var up: [Double]
+
+    var body: some View {
+        Canvas { context, size in
+            let count = min(down.count, up.count)
+            guard count >= 2 else { return }
+            let peak = max(down.suffix(count).max() ?? 0, up.suffix(count).max() ?? 0, 1)
+            stroke(down.suffix(count), peak: peak, color: Color.green, in: context, size: size)
+            stroke(up.suffix(count), peak: peak, color: Color.secondary.opacity(0.9), in: context, size: size)
+        }
+        .frame(height: 22)
+        .accessibilityHidden(true)
+    }
+
+    private func stroke(
+        _ values: ArraySlice<Double>,
+        peak: Double,
+        color: Color,
+        in context: GraphicsContext,
+        size: CGSize
+    ) {
+        var path = Path()
+        let last = CGFloat(values.count - 1)
+        for (index, value) in values.enumerated() {
+            let x = size.width * CGFloat(index) / last
+            let y = size.height * (1 - CGFloat(max(0, value) / peak))
+            let point = CGPoint(x: x, y: min(max(y, 0), size.height))
+            if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+    }
+}
+
+private struct LevelSparkline: View {
+    var values: [Double]
+
+    var body: some View {
+        Canvas { context, size in
+            guard values.count >= 2 else { return }
+            var path = Path()
+            let last = CGFloat(values.count - 1)
+            for (index, value) in values.enumerated() {
+                let x = size.width * CGFloat(index) / last
+                let y = size.height * (1 - CGFloat(min(max(value, 0), 100) / 100))
+                let point = CGPoint(x: x, y: y)
+                if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+            }
+            context.stroke(path, with: .color(Color.accentColor), style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+        }
+        .frame(height: 18)
+        .accessibilityHidden(true)
+    }
+}
+
 #Preview("Signed in") {
     UsagePanelView(
         content: PanelContent(
             cpuPercent: 12,
             memoryUsed: 18_400_000_000,
             memoryTotal: 36_000_000_000,
+            networkDown: 1_250_000,
+            networkUp: 84_000,
+            networkDownHistory: [400_000, 900_000, 1_250_000, 700_000],
+            networkUpHistory: [40_000, 80_000, 84_000, 50_000],
+            battery: BatteryStatus(percent: 86, source: .charging, minutesRemaining: 75),
+            batteryHistory: [80, 82, 84, 86],
             planName: "Pro+",
             rows: [
                 UsageRow(id: "grok", title: "Grok Bot", detail: "", percent: 12.7, resetsAt: Date().addingTimeInterval(3 * 86_400)),
-                UsageRow(id: "cursor", title: "Cursor models", detail: "", percent: 34.4, resetsAt: Date().addingTimeInterval(8 * 86_400))
+                UsageRow(id: "cursor", title: "Cursor models", detail: "", percent: 34.4, resetsAt: Date().addingTimeInterval(8 * 86_400)),
+                UsageRow(id: "other", title: "Other models", detail: "", percent: 0, resetsAt: Date().addingTimeInterval(8 * 86_400))
             ],
             isRefreshing: false,
             sessionLabel: "Cursor",

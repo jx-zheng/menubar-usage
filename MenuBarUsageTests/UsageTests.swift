@@ -22,16 +22,17 @@ final class UsagePresenterTests: XCTestCase {
         let presentation = UsagePresenter.present(facts)
 
         XCTAssertEqual(presentation.planName, "Pro+")
-        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor"])
-        XCTAssertEqual(presentation.rows.map(\.percentText), ["12.7%", "34.4%"])
-        XCTAssertEqual(presentation.rows.map(\.detail), ["", ""])
+        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor", "other"])
+        XCTAssertEqual(presentation.rows.map(\.percentText), ["12.7%", "34.4%", "0%"])
+        XCTAssertEqual(presentation.rows.map(\.detail), ["", "", ""])
         XCTAssertEqual(presentation.rows[0].resetsAt, grokReset)
         XCTAssertEqual(presentation.rows[1].resetsAt, cycleEnd)
+        XCTAssertEqual(presentation.rows[2].resetsAt, cycleEnd)
         XCTAssertFalse(UsagePresenter.sharesPool(facts))
         XCTAssertEqual(presentation.rows[0].title, "Grok Bot")
         XCTAssertEqual(presentation.rows[1].title, "Cursor models")
+        XCTAssertEqual(presentation.rows[2].title, "Other models")
         XCTAssertNil(presentation.note)
-        XCTAssertFalse(presentation.rows.contains { $0.id == "other" || $0.detail.localizedCaseInsensitiveContains("composer") || $0.detail.localizedCaseInsensitiveContains("weekly") })
     }
 
     func testWeeklySharedPoolIsOneIncludedRow() {
@@ -57,7 +58,7 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertEqual(presentation.note, "One included pool, shared by Cursor and Grok Bot.")
     }
 
-    func testWeeklyPlanOmitsOtherModels() {
+    func testWeeklyPlanShowsSeparateOtherModelsWithoutSubtitle() {
         let facts = UsageFacts(
             membershipType: "premium",
             billingCycleEnd: cycleEnd,
@@ -72,9 +73,12 @@ final class UsagePresenterTests: XCTestCase {
 
         let rows = UsagePresenter.present(facts).rows
 
-        XCTAssertEqual(rows.map(\.id), ["included"])
+        XCTAssertEqual(rows.map(\.id), ["included", "other"])
         XCTAssertEqual(rows[0].percentText, "35.5%")
-        XCTAssertFalse(rows.contains { $0.id == "other" })
+        XCTAssertEqual(rows[1].title, "Other models")
+        XCTAssertEqual(rows[1].percentText, "8.2%")
+        XCTAssertEqual(rows[1].detail, "")
+        XCTAssertEqual(rows[1].resetsAt, cycleEnd)
     }
 
     func testWeeklyStubZerosAreNotShownAsZeroPercent() {
@@ -107,7 +111,7 @@ final class UsagePresenterTests: XCTestCase {
 
         let presentation = UsagePresenter.present(facts)
 
-        XCTAssertEqual(presentation.rows.map(\.id), ["cursor"])
+        XCTAssertEqual(presentation.rows.map(\.id), ["cursor", "other"])
         XCTAssertEqual(presentation.note, "No separate Grok Bot allowance on this account.")
     }
 
@@ -121,12 +125,13 @@ final class UsagePresenterTests: XCTestCase {
             grok: .percent(20, resetsAt: cycleEnd)
         )
         XCTAssertTrue(UsagePresenter.sharesPool(shared))
-        XCTAssertEqual(UsagePresenter.present(shared).rows.map(\.id), ["included"])
+        XCTAssertEqual(UsagePresenter.present(shared).rows.map(\.id), ["included", "other"])
 
         var legacy = shared
         legacy.offeredUnifiedMigration = true
         XCTAssertFalse(UsagePresenter.sharesPool(legacy))
-        XCTAssertEqual(UsagePresenter.present(legacy).rows.map(\.id), ["grok", "cursor"])
+        XCTAssertEqual(UsagePresenter.present(legacy).rows.map(\.id), ["grok", "cursor", "other"])
+        XCTAssertEqual(UsagePresenter.present(legacy).rows.map(\.detail), ["", "", ""])
     }
 
     func testUnlimitedPlanDoesNotDrawAZeroBar() {
@@ -188,7 +193,7 @@ final class UsageDecodingTests: XCTestCase {
         XCTAssertFalse(facts.includedPeriodWeekly)
         XCTAssertTrue(facts.offeredUnifiedMigration)
         XCTAssertFalse(String(describing: facts).contains("SHOULD_NOT_APPEAR"))
-        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor"])
+        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor", "other"])
         XCTAssertEqual(presentation.rows[0].percentText, "12.7%")
         XCTAssertEqual(calendarYear(facts.billingCycleEnd), 2026)
     }
@@ -231,7 +236,7 @@ final class UsageDecodingTests: XCTestCase {
         """.data(using: .utf8)!
         let facts = try UsageDecoding.facts(summaryData: summary, sandData: sand, sandFailed: false)
         XCTAssertEqual(facts.grok, .noAllowance)
-        XCTAssertEqual(UsagePresenter.present(facts).rows.map(\.id), ["cursor"])
+        XCTAssertEqual(UsagePresenter.present(facts).rows.map(\.id), ["cursor", "other"])
     }
 
     func testMillisecondResetParses() {
@@ -325,5 +330,119 @@ final class SessionCookieTests: XCTestCase {
         try process.run()
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
+    }
+}
+
+final class MachineTelemetryTests: XCTestCase {
+    func testPrimaryInterfaceIsNotAddedToThePhysicalLink() {
+        let interfaces = [
+            LinkReading(name: "en0", isUp: true, isLoopback: false, bytesIn: 100, bytesOut: 40),
+            LinkReading(name: "utun0", isUp: true, isLoopback: false, bytesIn: 80, bytesOut: 20),
+            LinkReading(name: "lo0", isUp: true, isLoopback: true, bytesIn: 9, bytesOut: 9)
+        ]
+        let totals = InterfaceSelection.totals(interfaces: interfaces, primary: "utun0")
+        XCTAssertEqual(totals?.bytesIn, 80)
+        XCTAssertEqual(totals?.bytesOut, 20)
+    }
+
+    func testMissingPrimaryFallsBackToUpEthernet() {
+        let interfaces = [
+            LinkReading(name: "en0", isUp: true, isLoopback: false, bytesIn: 10, bytesOut: 4),
+            LinkReading(name: "en1", isUp: false, isLoopback: false, bytesIn: 50, bytesOut: 50),
+            LinkReading(name: "awdl0", isUp: true, isLoopback: false, bytesIn: 7, bytesOut: 7)
+        ]
+        let totals = InterfaceSelection.totals(interfaces: interfaces, primary: nil)
+        XCTAssertEqual(totals?.bytesIn, 10)
+        XCTAssertEqual(totals?.bytesOut, 4)
+    }
+
+    func testRateIgnoresAResetCounter() {
+        XCTAssertNil(Throughput.bytesPerSecond(previous: 500, current: 100, seconds: 1))
+        XCTAssertEqual(Throughput.bytesPerSecond(previous: 1_000, current: 2_500, seconds: 1), 1_500)
+        XCTAssertNil(Throughput.bytesPerSecond(previous: 0, current: 100, seconds: 0.05))
+    }
+
+    func testRateFormattingUsesDecimalUnits() {
+        XCTAssertEqual(Throughput.rate(0), "0 B/s")
+        XCTAssertEqual(Throughput.rate(1_500), "1.5 KB/s")
+        XCTAssertEqual(Throughput.rate(12_500_000), "12.5 MB/s")
+        XCTAssertEqual(Throughput.rate(250_000_000), "250 MB/s")
+    }
+
+    func testBatteryParser() {
+        let charging: [String: Any] = [
+            "Current Capacity": 86,
+            "Max Capacity": 100,
+            "Is Charging": true,
+            "Power Source State": "AC Power",
+            "Time to Full Charge": 75,
+            "Transport Type": "Internal",
+            "Is Present": true
+        ]
+        let status = BatteryStatusParser.parse(charging)
+        XCTAssertEqual(status?.percent, 86)
+        XCTAssertEqual(status?.source, .charging)
+        XCTAssertEqual(status?.minutesRemaining, 75)
+        XCTAssertEqual(status?.timeCaption, "1 hr 15 min to full")
+
+        let draining = BatteryStatusParser.parse([
+            "Current Capacity": 40,
+            "Max Capacity": 100,
+            "Is Charging": false,
+            "Power Source State": "Battery Power",
+            "Time to Empty": 45
+        ])
+        XCTAssertEqual(draining?.source, .battery)
+        XCTAssertEqual(draining?.timeCaption, "45 min left")
+
+        let calculating = BatteryStatusParser.parse([
+            "Current Capacity": 40,
+            "Max Capacity": 100,
+            "Power Source State": "Battery Power",
+            "Time to Empty": -1
+        ])
+        XCTAssertNil(calculating?.minutesRemaining)
+        XCTAssertNil(BatteryStatusParser.parse(["Power Source State": "AC Power"]))
+        XCTAssertNil(BatteryStatusParser.parse([
+            "Current Capacity": 10,
+            "Max Capacity": 100,
+            "Is Present": false
+        ]))
+        let numericFlag = BatteryStatusParser.parse([
+            "Current Capacity": 50,
+            "Max Capacity": 100,
+            "Is Charging": 0,
+            "Power Source State": "Battery Power",
+            "Time to Empty": 10
+        ])
+        XCTAssertEqual(numericFlag?.source, .battery)
+    }
+
+    func testPrefersTheInternalBattery() {
+        let chosen = BatteryStatusParser.choose([
+            [
+                "Current Capacity": 10,
+                "Max Capacity": 100,
+                "Transport Type": "USB"
+            ],
+            [
+                "Current Capacity": 90,
+                "Max Capacity": 100,
+                "Power Source State": "AC Power",
+                "Is Charging": false,
+                "Transport Type": "Internal"
+            ]
+        ])
+        XCTAssertEqual(chosen?.percent, 90)
+        XCTAssertEqual(chosen?.source, .powerAdapter)
+        XCTAssertNil(chosen?.timeCaption)
+    }
+
+    func testHistoryKeepsTheNewestSamples() {
+        var history: [Double] = []
+        for value in 0..<5 {
+            SampleHistory.append(Double(value), to: &history, limit: 3)
+        }
+        XCTAssertEqual(history, [2, 3, 4])
     }
 }

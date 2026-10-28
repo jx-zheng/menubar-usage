@@ -29,20 +29,23 @@ A non-interactive check prints CPU, memory, the auth source, and usage rows, the
 build/DerivedData/Build/Products/Debug/MenuBarUsage.app/Contents/MacOS/MenuBarUsage --dump
 ```
 
-The status item shows CPU and memory, for example `CPU 42% · Mem 68%`. AI usage stays in the panel.
+The status item shows CPU and memory only, for example `CPU 42% · Mem 68%`. Network, battery, and AI usage stay in the panel.
 
 ## What the panel shows
 
 - CPU percent, from Mach host CPU ticks, refreshed about every 3 seconds. The card keeps an “All cores” line.
 - Memory used and total. Used memory is active + wired + compressed pages; the total is `ProcessInfo.physicalMemory`.
+- Network down and up rates for the primary interface, with a short sparkline of recent samples. Refreshed on the same cadence as CPU.
+- Battery percent, whether it is charging, on AC power, or on battery, and time remaining when the system reports it. Desktops with no battery omit this row. A short sparkline shows recent charge level.
 - An **AI usage** section, refreshed about every 90 seconds.
 
 Legacy Cursor plans (Pro, Pro+, and the other monthly plans) keep separate meters:
 
 - **Grok Bot**, with its reset.
 - **Cursor models** — `autoPercentUsed`, reset at `billingCycleEnd`.
+- **Other models** — `apiPercentUsed`, when that pool is separate. The row is the percent, bar, and reset.
 
-The X Subscription shares one weekly Cursor-model pool across Cursor and Grok Bot. On that plan the panel shows a single **Included AI usage** row. The same percentage is not drawn twice, and third-party model usage is not listed. A weekly plan whose monthly pools are both sitting at 0 while the weekly figure is missing is shown as unavailable, not as 0%.
+The X Subscription shares one weekly Cursor-model pool across Cursor and Grok Bot. On that plan the panel shows a single **Included AI usage** row, plus **Other models** only when that pool is actually separate. The same percentage is not drawn twice. A weekly plan whose monthly pools are both sitting at 0 while the week is partly spent does not show a fake 0% Other models row.
 
 `totalPercentUsed` is the included figure only when the two pools are not reported. `plan.used` / `plan.limit` is a different denominator and is not shown next to the pool percentages.
 
