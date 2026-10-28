@@ -175,6 +175,25 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertEqual(memoryOnly.tokens().map(\.text), ["68%"])
 
         XCTAssertTrue(UsageFormatting.statusItem(cpu: nil, memory: nil).tokens().isEmpty)
+
+        let low = UsageFormatting.statusItem(cpu: 36.2, memory: 67.6)
+        let high = UsageFormatting.statusItem(cpu: 36.4, memory: 68.4)
+        XCTAssertEqual(low, high)
+        XCTAssertNotEqual(low, UsageFormatting.statusItem(cpu: 37, memory: 68))
+    }
+
+    func testStatusItemImageIsReusedForTheSameRoundedPercents() throws {
+        let parts = UsageFormatting.statusItem(cpu: 36.2, memory: 68.4)
+        let first = try XCTUnwrap(StatusItemArtwork.image(for: parts))
+        let second = try XCTUnwrap(StatusItemArtwork.image(for: UsageFormatting.statusItem(cpu: 36.4, memory: 67.6)))
+        XCTAssertTrue(first === second)
+        XCTAssertTrue(first.isTemplate)
+
+        let changed = try XCTUnwrap(StatusItemArtwork.image(for: UsageFormatting.statusItem(cpu: 37, memory: 68)))
+        XCTAssertFalse(first === changed)
+        let restored = try XCTUnwrap(StatusItemArtwork.image(for: parts))
+        XCTAssertFalse(restored === first)
+        XCTAssertEqual(restored.size, first.size)
     }
 
     func testStatusItemImageDrawsBothSymbolsAndBothPercents() throws {
@@ -212,6 +231,92 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertEqual(PlanName.format("pro_plus"), "Pro+")
         XCTAssertEqual(PlanName.format("premium"), "Premium")
         XCTAssertEqual(PlanName.format("Pro+"), "Pro+")
+    }
+}
+
+final class UsageScheduleTests: XCTestCase {
+    func testClosedPanelPollsMoreSlowlyAndBacksOffTransportErrors() {
+        XCTAssertEqual(UsageSchedule.usageInterval(panelOpen: true, transportFailures: 0), 90)
+        XCTAssertEqual(UsageSchedule.usageInterval(panelOpen: false, transportFailures: 0), 12 * 60)
+        XCTAssertEqual(UsageSchedule.usageInterval(panelOpen: true, transportFailures: 1), 180)
+        XCTAssertEqual(UsageSchedule.usageInterval(panelOpen: false, transportFailures: 1), 24 * 60)
+        XCTAssertEqual(UsageSchedule.usageInterval(panelOpen: false, transportFailures: 4), 30 * 60)
+        XCTAssertEqual(UsageSchedule.usageInterval(panelOpen: true, transportFailures: 8), 30 * 60)
+    }
+
+    func testOpeningRefreshesOnlyWhenTheSnapshotIsStale() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        XCTAssertTrue(UsageSchedule.shouldRefreshOnOpen(updatedAt: nil, now: now))
+        XCTAssertFalse(UsageSchedule.shouldRefreshOnOpen(updatedAt: now.addingTimeInterval(-59), now: now))
+        XCTAssertTrue(UsageSchedule.shouldRefreshOnOpen(updatedAt: now.addingTimeInterval(-60), now: now))
+    }
+
+    func testPlanInfoIsFetchedAtLaunchAndThenHourly() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        XCTAssertTrue(UsageSchedule.shouldFetchPlan(fetchedAt: nil, now: now))
+        XCTAssertFalse(UsageSchedule.shouldFetchPlan(fetchedAt: now.addingTimeInterval(-3_599), now: now))
+        XCTAssertTrue(UsageSchedule.shouldFetchPlan(fetchedAt: now.addingTimeInterval(-3_600), now: now))
+    }
+
+    func testPanelToggleKeepsTheRemainderOfTheCurrentCadence() {
+        let now = Date(timeIntervalSince1970: 20_000)
+        let fresh = UsageSchedule.nextDeadline(
+            now: now,
+            lastAttempt: now.addingTimeInterval(-20),
+            panelOpen: true,
+            transportFailures: 0
+        )
+        XCTAssertEqual(fresh.timeIntervalSince(now), 70, accuracy: 0.001)
+
+        let quiet = UsageSchedule.nextDeadline(
+            now: now,
+            lastAttempt: now.addingTimeInterval(-90),
+            panelOpen: false,
+            transportFailures: 0
+        )
+        XCTAssertEqual(quiet.timeIntervalSince(now), 12 * 60 - 90, accuracy: 0.001)
+
+        let due = UsageSchedule.nextDeadline(
+            now: now,
+            lastAttempt: now.addingTimeInterval(-1_000),
+            panelOpen: true,
+            transportFailures: 0
+        )
+        XCTAssertEqual(due, now)
+    }
+
+    func testClosedPanelSamplesTheSystemALittleSlower() {
+        XCTAssertEqual(UsageSchedule.systemInterval(panelOpen: false, firstSample: true), 1)
+        XCTAssertEqual(UsageSchedule.systemInterval(panelOpen: true, firstSample: false), 3)
+        XCTAssertEqual(UsageSchedule.systemInterval(panelOpen: false, firstSample: false), 5)
+    }
+}
+
+final class SessionFreshnessTests: XCTestCase {
+    func testNearExpiryForcesAnotherResolve() {
+        let soon = Self.jwt(subject: "google-oauth2|user_TEST", expiresAt: Date().addingTimeInterval(4 * 60))
+        let later = Self.jwt(subject: "google-oauth2|user_TEST", expiresAt: Date().addingTimeInterval(30 * 60))
+        XCTAssertTrue(SessionCredentialFreshness.isNearExpiry("user_TEST%3A%3A\(soon)"))
+        XCTAssertFalse(SessionCredentialFreshness.isNearExpiry("user_TEST%3A%3A\(later)"))
+        XCTAssertFalse(SessionCredentialFreshness.isNearExpiry("not-a-token"))
+        XCTAssertEqual(
+            SessionCredentialFreshness.expiration(of: "user_TEST::\(later)")?.timeIntervalSince1970 ?? 0,
+            Date().addingTimeInterval(30 * 60).timeIntervalSince1970,
+            accuracy: 1
+        )
+    }
+
+    private static func jwt(subject: String, expiresAt: Date) -> String {
+        func part(_ object: [String: Any]) -> String {
+            let data = try! JSONSerialization.data(withJSONObject: object)
+            return data.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let header = part(["alg": "none", "typ": "JWT"])
+        let payload = part(["sub": subject, "exp": expiresAt.timeIntervalSince1970])
+        return "\(header).\(payload).sig"
     }
 }
 
@@ -489,12 +594,40 @@ final class MachineTelemetryTests: XCTestCase {
         }
         XCTAssertEqual(history, [2, 3, 4])
     }
+
+    func testPrimaryInterfaceCacheReusesAValueUntilItIsStale() {
+        var cache = TimedCache<String?>(ttl: 45)
+        let start = Date(timeIntervalSince1970: 1_000)
+        var reads = 0
+        let first = cache.resolve(now: start) { reads += 1; return "en0" }
+        let second = cache.resolve(now: start.addingTimeInterval(30)) { reads += 1; return "en1" }
+        XCTAssertEqual(first.value, "en0")
+        XCTAssertTrue(first.refreshed)
+        XCTAssertEqual(second.value, "en0")
+        XCTAssertFalse(second.refreshed)
+        XCTAssertEqual(reads, 1)
+
+        cache.markStale()
+        let third = cache.resolve(now: start.addingTimeInterval(31)) { reads += 1; return nil as String? }
+        XCTAssertTrue(third.refreshed)
+        XCTAssertNil(third.value)
+        let fourth = cache.resolve(now: start.addingTimeInterval(40)) { reads += 1; return "en1" }
+        XCTAssertEqual(fourth.value, nil as String?)
+        XCTAssertFalse(fourth.refreshed)
+        XCTAssertEqual(reads, 2)
+
+        let fifth = cache.resolve(now: start.addingTimeInterval(31 + 45)) { reads += 1; return "en1" }
+        XCTAssertEqual(fifth.value, "en1")
+        XCTAssertTrue(fifth.refreshed)
+        XCTAssertEqual(reads, 3)
+    }
 }
 
 @MainActor
 final class HostSampleHistoryTests: XCTestCase {
     func testReadingsFillCpuAndMemoryHistoryOnTheSharedWindow() {
         let model = AppModel()
+        model.panelDidOpen()
         XCTAssertEqual(model.content.cpuHistory, [])
         XCTAssertEqual(model.content.memoryHistory, [])
 

@@ -131,20 +131,21 @@ enum KeychainTokenStore {
     static let service = "com.jxzheng.menubar-usage.session"
     static let account = "WorkosCursorSessionToken"
 
+    private static var hasCache = false
+    private static var cached: String?
+
     static func read() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let text, !text.isEmpty else { return nil }
-        return text
+        if hasCache { return cached }
+        cached = readKeychain()
+        hasCache = true
+        return cached
+    }
+
+    /// Drops the in-memory copy so the next read hits the Keychain.
+    /// Used on launch misses, rejection, and when the JWT is near expiry.
+    static func invalidateCache() {
+        hasCache = false
+        cached = nil
     }
 
     static func save(_ value: String) -> Bool {
@@ -159,11 +160,25 @@ enum KeychainTokenStore {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         let update = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if update == errSecSuccess { return true }
-        guard update == errSecItemNotFound else { return false }
+        if update == errSecSuccess {
+            cached = value
+            hasCache = true
+            return true
+        }
+        guard update == errSecItemNotFound else {
+            invalidateCache()
+            return false
+        }
         var insert = query
         attributes.forEach { insert[$0.key] = $0.value }
-        return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+        let saved = SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+        if saved {
+            cached = value
+            hasCache = true
+        } else {
+            invalidateCache()
+        }
+        return saved
     }
 
     static func delete() {
@@ -173,6 +188,46 @@ enum KeychainTokenStore {
             kSecAttrAccount as String: account
         ]
         SecItemDelete(query as CFDictionary)
+        cached = nil
+        hasCache = true
+    }
+
+    private static func readKeychain() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let text, !text.isEmpty else { return nil }
+        return text
+    }
+}
+
+enum SessionCredentialFreshness {
+    /// Re-read the Keychain and Cursor's database this long before `exp`.
+    static let leadTime: TimeInterval = 5 * 60
+
+    static func isNearExpiry(_ cookie: String, now: Date = Date(), lead: TimeInterval = leadTime) -> Bool {
+        guard let expires = expiration(of: cookie) else { return false }
+        return expires.timeIntervalSince(now) <= lead
+    }
+
+    static func expiration(of cookie: String) -> Date? {
+        let jwt: String
+        if let range = cookie.range(of: "%3A%3A", options: .caseInsensitive) {
+            jwt = String(cookie[range.upperBound...])
+        } else if let range = cookie.range(of: "::") {
+            jwt = String(cookie[range.upperBound...])
+        } else {
+            jwt = cookie
+        }
+        return JWTClaims.decode(jwt)?.expiresAt
     }
 }
 

@@ -54,6 +54,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var sessionLabel: String?
     @Published private(set) var hasPastedToken = false
+    /// Template image for the status item. Replaced only when the rounded percents change.
+    @Published private(set) var statusImage: NSImage?
+    @Published private(set) var statusAccessibility = "Menu Bar Usage"
 
     private var systemLoop: Task<Void, Never>?
     private var usageLoop: Task<Void, Never>?
@@ -62,6 +65,36 @@ final class AppModel: ObservableObject {
     private var pendingStatus: String?
     private var networkMark: (bytesIn: UInt64, bytesOut: UInt64, at: Date)?
     private let historyLimit = 30
+
+    private var panelVisible = false
+    private var seededMachineMetrics = false
+    private var samplingSuspended = false
+    private var dropCPUBaseline = false
+    private var sleepGeneration = 0
+    private var transportFailures = 0
+    private var lastUsageAttemptAt: Date?
+    private var cachedCredential: SessionCredential?
+    private var cachedPlan: PlanInfoDTO?
+    private var planFetchedAt: Date?
+    private var lastBatterySample = Date.distantPast
+    private var notificationTokens: [NSObjectProtocol] = []
+    private var resumeContinuations: [CheckedContinuation<Void, Never>] = []
+    private var sleepers: [SleepBox] = []
+
+    private var cpuValue: Double?
+    private var cpuSamples: [Double] = []
+    private var memoryValue: SystemSampler.Memory?
+    private var memorySamples: [Double] = []
+    private var networkDownValue: Double?
+    private var networkUpValue: Double?
+    private var networkDownSamples: [Double] = []
+    private var networkUpSamples: [Double] = []
+    private var batteryValue: BatteryStatus?
+    private var batterySamples: [Double] = []
+    private var renderedStatusParts = StatusItemParts(cpuPercent: nil, memoryPercent: nil)
+
+    /// Rounded CPU and memory strings currently drawn in the status item.
+    var statusParts: StatusItemParts { renderedStatusParts }
 
     var content: PanelContent {
         PanelContent(
@@ -88,35 +121,29 @@ final class AppModel: ObservableObject {
         )
     }
 
-    var statusParts: StatusItemParts {
-        UsageFormatting.statusItem(cpu: cpuPercent, memory: memory?.percent)
-    }
-
-    var accessibilitySummary: String {
-        var parts = ["Menu Bar Usage"]
-        let item = statusParts
-        if let cpu = item.cpuPercent {
-            parts.append("CPU \(cpu)")
-        }
-        if let memory = item.memoryPercent {
-            parts.append("memory \(memory)")
-        }
-        if let authMessage {
-            parts.append(authMessage)
-        }
-        return parts.joined(separator: ", ")
-    }
-
     func start() {
         guard !started else { return }
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
         started = true
         hasPastedToken = KeychainTokenStore.read() != nil
+        observePowerAndSession()
+        observePanelWindow()
+        BatterySampler.startWatching { [weak self] in
+            Task { @MainActor in
+                self?.recordBattery(force: true)
+            }
+        }
         systemLoop = Task { [weak self] in
             var previous: SystemSampler.CPUTicks?
-            var interval: UInt64 = 1_000_000_000
+            var first = true
             while !Task.isCancelled {
                 guard let self else { return }
+                await self.waitWhileSuspended()
+                guard !Task.isCancelled else { return }
+                if self.dropCPUBaseline {
+                    previous = nil
+                    self.dropCPUBaseline = false
+                }
                 if let ticks = SystemSampler.cpuTicks() {
                     if let previous {
                         self.noteCpuReading(SystemSampler.cpuPercent(from: previous, to: ticks))
@@ -124,43 +151,94 @@ final class AppModel: ObservableObject {
                     previous = ticks
                 }
                 self.noteMemoryReading(SystemSampler.memory())
-                self.sampleNetwork()
-                self.sampleBattery()
-                try? await Task.sleep(nanoseconds: interval)
-                interval = 3_000_000_000
+                self.recordNetwork()
+                self.recordBattery(force: false)
+                let interval = UsageSchedule.systemInterval(panelOpen: self.panelVisible, firstSample: first)
+                first = false
+                let generation = self.sleepGeneration
+                _ = await self.sleep(seconds: interval, generation: generation)
             }
         }
         usageLoop = Task { [weak self] in
+            var nextFetchAt = Date()
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refreshUsage()
-                try? await Task.sleep(nanoseconds: 90_000_000_000)
+                await self.waitWhileSuspended()
+                guard !Task.isCancelled else { return }
+                if Date() >= nextFetchAt {
+                    if !self.isRefreshing {
+                        await self.refreshUsage()
+                    }
+                    nextFetchAt = Date().addingTimeInterval(self.currentUsageInterval())
+                }
+                let generation = self.sleepGeneration
+                let remaining = nextFetchAt.timeIntervalSinceNow
+                let interrupted = await self.sleep(seconds: remaining, generation: generation)
+                guard !Task.isCancelled else { return }
+                if interrupted, !self.samplingSuspended {
+                    nextFetchAt = UsageSchedule.nextDeadline(
+                        now: Date(),
+                        lastAttempt: self.lastUsageAttemptAt,
+                        panelOpen: self.panelVisible,
+                        transportFailures: self.transportFailures
+                    )
+                }
             }
         }
+    }
+
+    /// The menu-bar window opened. Refreshes AI usage when the last result is older than a minute.
+    func panelDidOpen() {
+        let wasOpen = panelVisible
+        panelVisible = true
+        mirrorMachineMetrics()
+        guard !wasOpen else { return }
+        interruptSleepers()
+        // `start()` owns the first fetch. Tests open the panel without starting the loops.
+        guard started else { return }
+        guard UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) else { return }
+        Task { await refreshUsage() }
+    }
+
+    func panelDidClose() {
+        guard panelVisible else { return }
+        panelVisible = false
+        interruptSleepers()
     }
 
     func refreshUsage() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
-        hasPastedToken = KeychainTokenStore.read() != nil
+        defer {
+            isRefreshing = false
+            lastUsageAttemptAt = Date()
+        }
 
         let credential: SessionCredential
-        switch SessionResolver.resolve(allowKeychain: !suppressKeychain) {
+        switch credentialForRefresh() {
         case let .success(value):
             credential = value
         case let .failure(failure):
             authMessage = failure.message
             sessionLabel = nil
             presentation = UsagePresentation(planName: nil, note: nil, rows: [])
+            refreshStatusItem()
             return
         }
 
         do {
-            let fetch = try await UsageClient.shared.fetch(cookie: credential.cookie)
+            let now = Date()
+            let includePlan = UsageSchedule.shouldFetchPlan(fetchedAt: planFetchedAt, now: now)
+            let fetch = try await UsageClient.shared.fetch(cookie: credential.cookie, includePlan: includePlan)
+            if includePlan {
+                if let plan = fetch.plan {
+                    cachedPlan = plan
+                }
+                planFetchedAt = now
+            }
             let facts = UsageFacts(
                 summary: fetch.summary,
-                plan: fetch.plan,
+                plan: fetch.plan ?? cachedPlan,
                 period: fetch.period,
                 sand: fetch.sand,
                 sandFailed: fetch.sandFailed
@@ -169,6 +247,7 @@ final class AppModel: ObservableObject {
             authMessage = nil
             sessionLabel = credential.source.label
             updatedAt = Date()
+            transportFailures = 0
             if let pendingStatus {
                 statusMessage = pendingStatus
                 self.pendingStatus = nil
@@ -177,7 +256,19 @@ final class AppModel: ObservableObject {
             } else {
                 statusMessage = nil
             }
+            refreshStatusItem()
+        } catch UsageClientError.transport {
+            transportFailures = min(transportFailures + 1, 6)
+            statusMessage = UsageClientError.transport.localizedDescription
+            if sessionLabel == nil {
+                sessionLabel = credential.source.label
+            }
         } catch UsageClientError.unauthorized {
+            transportFailures = 0
+            cachedCredential = nil
+            cachedPlan = nil
+            planFetchedAt = nil
+            KeychainTokenStore.invalidateCache()
             if credential.source == .keychain, case .success = SessionResolver.databaseCredential() {
                 suppressKeychain = true
                 pendingStatus = "The pasted token was rejected. Showing the Cursor session."
@@ -189,7 +280,9 @@ final class AppModel: ObservableObject {
             sessionLabel = nil
             presentation = UsagePresentation(planName: presentation.planName, note: nil, rows: [])
             statusMessage = nil
+            refreshStatusItem()
         } catch {
+            transportFailures = 0
             statusMessage = error.localizedDescription
             if sessionLabel == nil {
                 sessionLabel = credential.source.label
@@ -206,6 +299,9 @@ final class AppModel: ObservableObject {
         }
         suppressKeychain = false
         hasPastedToken = true
+        cachedCredential = SessionCredential(cookie: cookie, source: .keychain)
+        cachedPlan = nil
+        planFetchedAt = nil
         statusMessage = nil
         Task { await refreshUsage() }
         return nil
@@ -215,6 +311,9 @@ final class AppModel: ObservableObject {
         KeychainTokenStore.delete()
         suppressKeychain = false
         hasPastedToken = false
+        cachedCredential = nil
+        cachedPlan = nil
+        planFetchedAt = nil
         Task { await refreshUsage() }
     }
 
@@ -246,21 +345,52 @@ final class AppModel: ObservableObject {
         NSApp.terminate(nil)
     }
 
-    func noteCpuReading(_ percent: Double?) {
-        cpuPercent = percent
-        if let percent {
-            SampleHistory.append(percent, to: &cpuHistory, limit: historyLimit)
+    private func currentUsageInterval() -> TimeInterval {
+        UsageSchedule.usageInterval(panelOpen: panelVisible, transportFailures: transportFailures)
+    }
+
+    private func credentialForRefresh() -> Result<SessionCredential, AuthFailure> {
+        if let cachedCredential, !SessionCredentialFreshness.isNearExpiry(cachedCredential.cookie) {
+            return .success(cachedCredential)
         }
+        if cachedCredential != nil {
+            KeychainTokenStore.invalidateCache()
+            cachedPlan = nil
+            planFetchedAt = nil
+        }
+        let result = SessionResolver.resolve(allowKeychain: !suppressKeychain)
+        switch result {
+        case let .success(value):
+            if cachedCredential?.cookie != value.cookie {
+                cachedPlan = nil
+                planFetchedAt = nil
+            }
+            cachedCredential = value
+        case .failure:
+            cachedCredential = nil
+        }
+        return result
+    }
+
+    func noteCpuReading(_ percent: Double?) {
+        cpuValue = percent
+        if let percent {
+            SampleHistory.append(percent, to: &cpuSamples, limit: historyLimit)
+        }
+        mirrorMachineMetrics()
+        refreshStatusItem()
     }
 
     func noteMemoryReading(_ reading: SystemSampler.Memory?) {
-        memory = reading
+        memoryValue = reading
         if let percent = reading?.percent {
-            SampleHistory.append(percent, to: &memoryHistory, limit: historyLimit)
+            SampleHistory.append(percent, to: &memorySamples, limit: historyLimit)
         }
+        mirrorMachineMetrics()
+        refreshStatusItem()
     }
 
-    private func sampleNetwork() {
+    private func recordNetwork() {
         guard let totals = InterfaceSelection.totals(
             interfaces: LinkCounters.read(),
             primary: PrimaryInterface.name()
@@ -269,21 +399,217 @@ final class AppModel: ObservableObject {
         if let mark = networkMark,
            let down = Throughput.bytesPerSecond(previous: mark.bytesIn, current: totals.bytesIn, seconds: now.timeIntervalSince(mark.at)),
            let up = Throughput.bytesPerSecond(previous: mark.bytesOut, current: totals.bytesOut, seconds: now.timeIntervalSince(mark.at)) {
-            networkDown = down
-            networkUp = up
-            SampleHistory.append(down, to: &networkDownHistory, limit: historyLimit)
-            SampleHistory.append(up, to: &networkUpHistory, limit: historyLimit)
+            networkDownValue = down
+            networkUpValue = up
+            SampleHistory.append(down, to: &networkDownSamples, limit: historyLimit)
+            SampleHistory.append(up, to: &networkUpSamples, limit: historyLimit)
+            mirrorMachineMetrics()
         }
         networkMark = (totals.bytesIn, totals.bytesOut, now)
     }
 
-    private func sampleBattery() {
+    private func recordBattery(force: Bool) {
+        let now = Date()
+        let due = now.timeIntervalSince(lastBatterySample) >= UsageSchedule.batteryInterval
+        if !force, !due { return }
         guard let reading = BatterySampler.read() else {
-            battery = nil
-            batteryHistory = []
+            let hadBattery = batteryValue != nil || !batterySamples.isEmpty
+            guard hadBattery else {
+                if due { lastBatterySample = now }
+                return
+            }
+            batteryValue = nil
+            batterySamples = []
+            lastBatterySample = now
+            mirrorMachineMetrics()
             return
         }
-        battery = reading
-        SampleHistory.append(reading.percent, to: &batteryHistory, limit: historyLimit)
+        // A power-source notification with the same charge waits for the normal cadence.
+        if batteryValue == reading, !due { return }
+        lastBatterySample = now
+        batteryValue = reading
+        SampleHistory.append(reading.percent, to: &batterySamples, limit: historyLimit)
+        mirrorMachineMetrics()
+    }
+
+    /// Copies the latest samples into published properties while the panel is open.
+    /// The first reading is published too, so the window is not blank before it appears.
+    /// Later hidden ticks stay on the private storage and do not rebuild the panel.
+    private func mirrorMachineMetrics() {
+        let shouldPublish = panelVisible || !seededMachineMetrics
+        guard shouldPublish else { return }
+        if cpuPercent != cpuValue { cpuPercent = cpuValue }
+        if cpuHistory != cpuSamples { cpuHistory = cpuSamples }
+        if memory != memoryValue { memory = memoryValue }
+        if memoryHistory != memorySamples { memoryHistory = memorySamples }
+        if networkDown != networkDownValue { networkDown = networkDownValue }
+        if networkUp != networkUpValue { networkUp = networkUpValue }
+        if networkDownHistory != networkDownSamples { networkDownHistory = networkDownSamples }
+        if networkUpHistory != networkUpSamples { networkUpHistory = networkUpSamples }
+        if battery != batteryValue { battery = batteryValue }
+        if batteryHistory != batterySamples { batteryHistory = batterySamples }
+        // Keep publishing through the second tick so the first CPU percent is in the panel.
+        if cpuValue != nil {
+            seededMachineMetrics = true
+        }
+    }
+
+    private func refreshStatusItem() {
+        let next = UsageFormatting.statusItem(cpu: cpuValue, memory: memoryValue?.percent)
+        if next != renderedStatusParts {
+            renderedStatusParts = next
+            let drawn = StatusItemArtwork.image(for: next)
+            if drawn !== statusImage {
+                statusImage = drawn
+            }
+        }
+        let summary = StatusAccessibility.summary(parts: next, authMessage: authMessage)
+        if summary != statusAccessibility {
+            statusAccessibility = summary
+        }
+    }
+
+    private func observePowerAndSession() {
+        let center = NSWorkspace.shared.notificationCenter
+        let pause: [Notification.Name] = [
+            NSWorkspace.willSleepNotification,
+            NSWorkspace.screensDidSleepNotification,
+            NSWorkspace.sessionDidResignActiveNotification
+        ]
+        let resume: [Notification.Name] = [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification
+        ]
+        for name in pause {
+            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.setSamplingSuspended(true)
+                }
+            })
+        }
+        for name in resume {
+            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.setSamplingSuspended(false)
+                }
+            })
+        }
+    }
+
+    /// Backup for a menu-bar window that stays mounted. `onAppear` / `onDisappear`
+    /// are the primary signals; these catch key and close when SwiftUI does not.
+    private func observePanelWindow() {
+        let center = NotificationCenter.default
+        notificationTokens.append(center.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let window = note.object as? NSWindow, Self.isPanelWindow(window) else { return }
+            Task { @MainActor in
+                self?.panelDidOpen()
+            }
+        })
+        notificationTokens.append(center.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let window = note.object as? NSWindow, Self.isPanelWindow(window) else { return }
+            Task { @MainActor in
+                self?.panelDidClose()
+            }
+        })
+    }
+
+    /// The popover content is pinned to 332 points. The status item is much narrower.
+    private static func isPanelWindow(_ window: NSWindow) -> Bool {
+        let width = window.frame.width
+        return width >= 300 && width <= 380
+    }
+
+    private func setSamplingSuspended(_ suspended: Bool) {
+        guard samplingSuspended != suspended else { return }
+        samplingSuspended = suspended
+        if suspended {
+            dropCPUBaseline = true
+            interruptSleepers()
+            return
+        }
+        let waiters = resumeContinuations
+        resumeContinuations.removeAll()
+        for waiter in waiters {
+            Task { @MainActor in
+                waiter.resume()
+            }
+        }
+    }
+
+    private func waitWhileSuspended() async {
+        guard samplingSuspended else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            if !samplingSuspended {
+                continuation.resume()
+                return
+            }
+            resumeContinuations.append(continuation)
+        }
+    }
+
+    /// `true` when the wait was cut short because the panel or the machine changed state.
+    private func sleep(seconds: TimeInterval, generation: Int) async -> Bool {
+        if seconds <= 0 || samplingSuspended || sleepGeneration != generation {
+            return sleepGeneration != generation || samplingSuspended
+        }
+        return await withCheckedContinuation { continuation in
+            if samplingSuspended || sleepGeneration != generation || Task.isCancelled {
+                continuation.resume(returning: true)
+                return
+            }
+            let box = SleepBox(continuation: continuation)
+            sleepers.append(box)
+            let tolerance = min(30, max(0.05, seconds * 0.1))
+            box.task = Task {
+                try? await Task.sleep(for: .seconds(seconds), tolerance: .seconds(tolerance))
+                await MainActor.run { [weak self] in
+                    self?.completeSleep(box, interrupted: false)
+                }
+            }
+        }
+    }
+
+    private func interruptSleepers() {
+        sleepGeneration &+= 1
+        let pending = sleepers
+        sleepers.removeAll()
+        for box in pending {
+            box.finish(interrupted: true)
+        }
+    }
+
+    private func completeSleep(_ box: SleepBox, interrupted: Bool) {
+        sleepers.removeAll { $0 === box }
+        box.finish(interrupted: interrupted)
+    }
+}
+
+/// One in-flight `Task.sleep`. Resumed from the main actor, and only once.
+private final class SleepBox {
+    var continuation: CheckedContinuation<Bool, Never>?
+    var task: Task<Void, Never>?
+
+    init(continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish(interrupted: Bool) {
+        guard let continuation else { return }
+        self.continuation = nil
+        task?.cancel()
+        task = nil
+        Task { @MainActor in
+            continuation.resume(returning: interrupted)
+        }
     }
 }
