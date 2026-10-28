@@ -462,19 +462,24 @@ enum UsageFormatting {
         return "\(Int(max(0, value).rounded()))%"
     }
 
-    /// Menu bar label: CPU then memory. AI usage stays in the panel.
-    static func statusItem(cpu: Double?, memory: Double?) -> String? {
-        switch (cpu, memory) {
-        case let (cpu?, memory?):
-            return "CPU \(menuPercent(cpu)) · Mem \(menuPercent(memory))"
-        case let (cpu?, nil):
-            return "CPU \(menuPercent(cpu))"
-        case let (nil, memory?):
-            return "Mem \(menuPercent(memory))"
-        default:
-            return nil
-        }
+    /// Percents for the menu bar. The symbols are drawn beside these strings;
+    /// the words CPU and Mem are not part of the label.
+    static func statusItem(cpu: Double?, memory: Double?) -> StatusItemParts {
+        StatusItemParts(
+            cpuPercent: cpu.map(menuPercent),
+            memoryPercent: memory.map(menuPercent)
+        )
     }
+}
+
+struct StatusItemParts: Equatable {
+    static let cpuSymbol = "cpu"
+    static let memorySymbol = "memorychip"
+
+    var cpuPercent: String?
+    var memoryPercent: String?
+
+    var isEmpty: Bool { cpuPercent == nil && memoryPercent == nil }
 }
 
 enum UsagePresenter {

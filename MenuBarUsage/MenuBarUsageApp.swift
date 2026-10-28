@@ -46,14 +46,29 @@ private struct StatusLabel: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "chart.bar.fill")
-            if let text = model.menuBarText {
-                Text(text)
-                    .font(.system(size: 12, weight: .medium))
-                    .monospacedDigit()
+        let parts = model.statusParts
+        HStack(spacing: 0) {
+            if let cpu = parts.cpuPercent {
+                metric(symbol: StatusItemParts.cpuSymbol, percent: cpu)
+            }
+            if parts.cpuPercent != nil, parts.memoryPercent != nil {
+                Text(" · ")
+            }
+            if let memory = parts.memoryPercent {
+                metric(symbol: StatusItemParts.memorySymbol, percent: memory)
             }
         }
+        .font(.system(size: 12, weight: .medium))
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.accessibilitySummary)
+    }
+
+    private func metric(symbol: String, percent: String) -> some View {
+        HStack(spacing: 0) {
+            Image(systemName: symbol)
+                .symbolRenderingMode(.monochrome)
+            Text(" \(percent)")
+                .monospacedDigit()
+        }
     }
 }
