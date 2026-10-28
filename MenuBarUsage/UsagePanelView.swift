@@ -7,52 +7,17 @@ struct UsagePanelView: View {
 
     @State private var pastedToken = ""
     @State private var pasteNote: String?
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().opacity(0.6)
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("This Mac")
-                machineCard(
-                    symbol: "cpu",
-                    title: "CPU",
-                    value: content.cpuPercent.map(UsageFormatting.menuPercent) ?? "—",
-                    detail: "All cores",
-                    percent: content.cpuPercent
-                )
-                machineCard(
-                    symbol: "memorychip",
-                    title: "Memory",
-                    value: content.memoryUsed.flatMap { _ in content.memoryPercent.map(UsageFormatting.menuPercent) } ?? "—",
-                    detail: memoryDetail,
-                    percent: content.memoryPercent
-                )
-                networkRow
-                if content.battery != nil {
-                    batteryRow
-                }
-
-                sectionTitle("AI usage")
-                if let authMessage = content.authMessage {
-                    signIn(message: authMessage)
-                } else if content.rows.isEmpty && content.isRefreshing {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("Checking Cursor…")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 8)
-                } else {
-                    ForEach(content.rows) { row in
-                        usageCard(row)
-                    }
-                }
-                tokenControls
+            VStack(alignment: .leading, spacing: 0) {
+                macMetrics
+                Divider().opacity(0.6).padding(.top, 4)
+                aiSection
             }
-            .padding(14)
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
 
             Divider().opacity(0.6)
             footer
@@ -62,16 +27,97 @@ struct UsagePanelView: View {
     }
 
     private var panelBackground: Color {
-        Color(nsColor: colorScheme == .dark ? .windowBackgroundColor : .windowBackgroundColor)
+        Color(nsColor: .windowBackgroundColor)
+    }
+
+    private var macMetrics: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            cpuRow
+            metricDivider
+            memoryRow
+            metricDivider
+            networkRow
+            if content.battery != nil {
+                metricDivider
+                batteryRow
+            }
+        }
+    }
+
+    private var metricDivider: some View {
+        Divider().opacity(0.45)
+    }
+
+    private var cpuRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                metricIcon("cpu")
+                Text("CPU")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                Text(cpuText)
+                    .font(.callout.weight(.semibold))
+                    .monospacedDigit()
+            }
+            LevelSparkline(values: content.cpuHistory, height: 26, filled: true)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(content.cpuPercent == nil ? "CPU, unavailable" : "CPU, \(cpuText)")
+    }
+
+    private var cpuText: String {
+        content.cpuPercent.map(UsageFormatting.menuPercent) ?? "—"
+    }
+
+    private var memoryRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                metricIcon("memorychip")
+                Text("Memory")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                Text(memoryPercentText)
+                    .font(.callout.weight(.semibold))
+                    .monospacedDigit()
+            }
+            if let memoryDetail {
+                Text(memoryDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            LevelSparkline(values: content.memoryHistory, height: 26, filled: true)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(memoryAccessibility)
+    }
+
+    private var memoryPercentText: String {
+        guard content.memoryUsed != nil, let percent = content.memoryPercent else { return "—" }
+        return UsageFormatting.menuPercent(percent)
+    }
+
+    private var memoryDetail: String? {
+        guard let used = content.memoryUsed, let total = content.memoryTotal, total > 0 else { return nil }
+        return "\(ByteText.string(used)) of \(ByteText.string(total))"
+    }
+
+    private var memoryAccessibility: String {
+        guard content.memoryUsed != nil, content.memoryPercent != nil else {
+            return "Memory, unavailable"
+        }
+        var parts = ["Memory", memoryPercentText]
+        if let memoryDetail {
+            parts.append(memoryDetail)
+        }
+        return parts.joined(separator: ", ")
     }
 
     private var networkRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                metricIcon("arrow.up.arrow.down")
                 Text("Network")
                     .font(.callout.weight(.medium))
                 Spacer(minLength: 8)
@@ -87,11 +133,7 @@ struct UsagePanelView: View {
                 DualSparkline(down: content.networkDownHistory, up: content.networkUpHistory)
             }
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(cardStroke)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Network, down \(downLabel), up \(upLabel)")
     }
@@ -107,15 +149,12 @@ struct UsagePanelView: View {
     private var batteryRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Image(systemName: batterySymbol)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                metricIcon(batterySymbol)
                 Text("Battery")
                     .font(.callout.weight(.medium))
                 Spacer(minLength: 8)
                 Text(content.battery.map { UsageFormatting.menuPercent($0.percent) } ?? "—")
-                    .font(.caption.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                     .monospacedDigit()
                 if let source = content.battery?.source.label {
                     Text(source)
@@ -132,11 +171,7 @@ struct UsagePanelView: View {
                 LevelSparkline(values: content.batteryHistory)
             }
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(cardStroke)
         .accessibilityElement(children: .combine)
     }
 
@@ -148,48 +183,47 @@ struct UsagePanelView: View {
         }
     }
 
-    private var memoryDetail: String {
-        guard let used = content.memoryUsed, let total = content.memoryTotal, total > 0 else {
-            return "Used of installed"
-        }
-        return "\(ByteText.string(used)) of \(ByteText.string(total))"
+    private func metricIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 16)
     }
 
-    private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.16))
-                    .frame(width: 32, height: 32)
-                Image(systemName: "chart.bar.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Usage")
-                    .font(.headline)
-                if let note = content.note, content.authMessage == nil {
-                    Text(note)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("CPU, memory, and included AI")
+    private var aiSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                sectionTitle("AI usage")
+                Spacer(minLength: 8)
+                if let plan = content.planName, content.authMessage == nil {
+                    Text(plan)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            Spacer(minLength: 8)
-            if let plan = content.planName, content.authMessage == nil {
-                Text(plan)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.08), in: Capsule())
+            if let note = content.note, content.authMessage == nil {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            if let authMessage = content.authMessage {
+                signIn(message: authMessage)
+            } else if content.rows.isEmpty && content.isRefreshing {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking Cursor…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(content.rows) { row in
+                    usageRow(row)
+                }
+            }
+            tokenControls
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.top, 12)
     }
 
     private var footer: some View {
@@ -231,15 +265,15 @@ struct UsagePanelView: View {
     }
 
     private var updatedLine: String {
-        guard let updated = content.updatedAt else { return "Not updated yet" }
-        return "Updated \(updated.formatted(date: .omitted, time: .shortened))"
+        guard let updated = content.updatedAt else { return "AI usage not loaded yet" }
+        return "AI updated \(updated.formatted(date: .omitted, time: .shortened))"
     }
 
     private var tokenControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             DisclosureGroup(content.hasPastedToken ? "Pasted session token" : "Paste a session token") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Saved only in this Mac's login Keychain. It is not written into the app or the repo.")
+                    Text("Stored in the login Keychain on this Mac.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -274,75 +308,31 @@ struct UsagePanelView: View {
     }
 
     private func signIn(message: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "person.crop.circle")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Sign in to Cursor")
-                        .font(.callout.weight(.semibold))
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("Usage percentages stay blank until a real session answers. Nothing is filled in as a guess.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sign in to Cursor")
+                .font(.callout.weight(.medium))
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 Button("Open Cursor", action: actions.openCursor)
                     .buttonStyle(.borderedProminent)
-                Button("Usage dashboard", action: actions.openDashboard)
+                Button("Dashboard", action: actions.openDashboard)
                     .buttonStyle(.bordered)
             }
-            .controlSize(.regular)
+            .controlSize(.small)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(cardStroke)
     }
 
-    private func machineCard(symbol: String, title: String, value: String, detail: String, percent: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.callout.weight(.medium))
-                Spacer()
-                Text(value)
-                    .font(.callout.weight(.semibold))
-                    .monospacedDigit()
-            }
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let percent {
-                UsageBar(percent: percent)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(cardStroke)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func usageCard(_ row: UsageRow) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
+    private func usageRow(_ row: UsageRow) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(row.title)
-                    .font(.callout.weight(.medium))
-                Spacer()
+                    .font(.callout)
+                Spacer(minLength: 8)
                 Text(row.percentText)
-                    .font(.callout.weight(.semibold))
+                    .font(.callout.weight(.medium))
                     .monospacedDigit()
                     .foregroundStyle(row.percent.map { UsageBar.tint(for: $0) } ?? Color.primary)
             }
@@ -361,20 +351,7 @@ struct UsagePanelView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(cardStroke)
         .accessibilityElement(children: .combine)
-    }
-
-    private var cardFill: Color {
-        Color(nsColor: colorScheme == .dark ? .controlBackgroundColor : .controlBackgroundColor)
-    }
-
-    private var cardStroke: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.06), lineWidth: 1)
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -476,21 +453,43 @@ private struct DualSparkline: View {
 
 private struct LevelSparkline: View {
     var values: [Double]
+    var color: Color = .accentColor
+    var height: CGFloat = 18
+    var filled: Bool = false
 
     var body: some View {
         Canvas { context, size in
+            if filled, values.count < 2 {
+                var axis = Path()
+                let y = size.height - 0.5
+                axis.move(to: CGPoint(x: 0, y: y))
+                axis.addLine(to: CGPoint(x: size.width, y: y))
+                context.stroke(axis, with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
+            }
             guard values.count >= 2 else { return }
-            var path = Path()
+            var line = Path()
             let last = CGFloat(values.count - 1)
             for (index, value) in values.enumerated() {
                 let x = size.width * CGFloat(index) / last
                 let y = size.height * (1 - CGFloat(min(max(value, 0), 100) / 100))
                 let point = CGPoint(x: x, y: y)
-                if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+                if index == 0 { line.move(to: point) } else { line.addLine(to: point) }
             }
-            context.stroke(path, with: .color(Color.accentColor), style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            if filled {
+                var area = line
+                area.addLine(to: CGPoint(x: size.width, y: size.height))
+                area.addLine(to: CGPoint(x: 0, y: size.height))
+                area.closeSubpath()
+                context.fill(area, with: .color(color.opacity(0.18)))
+            }
+            let lineWidth: CGFloat = filled ? 1.5 : 1.25
+            context.stroke(
+                line,
+                with: .color(color),
+                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+            )
         }
-        .frame(height: 18)
+        .frame(height: height)
         .accessibilityHidden(true)
     }
 }
@@ -499,8 +498,10 @@ private struct LevelSparkline: View {
     UsagePanelView(
         content: PanelContent(
             cpuPercent: 12,
+            cpuHistory: [22, 28, 18, 14, 16, 12, 19, 11, 9, 13, 12],
             memoryUsed: 18_400_000_000,
             memoryTotal: 36_000_000_000,
+            memoryHistory: [44, 45, 47, 46, 48, 49, 50, 51, 50, 51, 51],
             networkDown: 1_250_000,
             networkUp: 84_000,
             networkDownHistory: [400_000, 900_000, 1_250_000, 700_000],
@@ -525,8 +526,10 @@ private struct LevelSparkline: View {
     UsagePanelView(
         content: PanelContent(
             cpuPercent: 8,
+            cpuHistory: [4, 6, 5, 8],
             memoryUsed: 20_000_000_000,
             memoryTotal: 36_000_000_000,
+            memoryHistory: [52, 53, 55, 56],
             rows: [],
             authMessage: "Cursor is not signed in on this Mac.",
             isRefreshing: false,
