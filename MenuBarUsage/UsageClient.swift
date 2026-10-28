@@ -53,7 +53,6 @@ final class UsageClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 
     /// `includePlan` is false when plan info was fetched within the last hour.
     /// The summary request stays first so an auth failure does not fan out.
-    /// The optional posts then run together.
     func fetch(cookie: String, includePlan: Bool = true) async throws -> UsageFetch {
         let summaryData = try await send(
             url: URL(string: "https://cursor.com/api/usage-summary")!,
@@ -69,24 +68,21 @@ final class UsageClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
             throw UsageClientError.undecodable
         }
 
-        async let plan = loadPlan(includePlan, cookie: cookie)
-        async let period = sendOptional(
+        let planValue = await loadPlan(includePlan, cookie: cookie)
+        let periodValue = await sendOptional(
             url: URL(string: "https://cursor.com/api/dashboard/get-current-period-usage")!,
             method: "POST",
             cookie: cookie,
             referer: "https://cursor.com/dashboard/usage",
             as: PeriodUsageDTO.self
         )
-        async let sand = sendOptional(
+        let sandValue = await sendOptional(
             url: URL(string: "https://cursor.com/api/dashboard/get-sand-usage-status")!,
             method: "POST",
             cookie: cookie,
             referer: "https://cursor.com/bot",
             as: SandUsageDTO.self
         )
-        let planValue = await plan
-        let periodValue = await period
-        let sandValue = await sand
 
         return UsageFetch(
             summary: summary,

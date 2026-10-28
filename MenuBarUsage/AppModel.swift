@@ -357,23 +357,33 @@ final class AppModel: ObservableObject {
     }
 
     private func credentialForRefresh() -> Result<SessionCredential, AuthFailure> {
-        if let cachedCredential, !SessionCredentialFreshness.isNearExpiry(cachedCredential.cookie) {
+        if let cachedCredential,
+           cachedCredential.source == .keychain,
+           !SessionCredentialFreshness.isNearExpiry(cachedCredential.cookie) {
             notePastedToken()
             return .success(cachedCredential)
         }
-        if cachedCredential != nil {
+        if cachedCredential?.source == .keychain {
             KeychainTokenStore.invalidateCache()
-            cachedPlan = nil
-            planFetchedAt = nil
         }
+        let previousCookie = cachedCredential?.cookie
         let result = SessionResolver.resolve(allowKeychain: !suppressKeychain)
         switch result {
         case let .success(value):
-            if cachedCredential?.cookie != value.cookie {
-                cachedPlan = nil
-                planFetchedAt = nil
+            if value.source == .keychain {
+                if previousCookie != value.cookie {
+                    cachedPlan = nil
+                    planFetchedAt = nil
+                }
+                cachedCredential = value
+            } else {
+                // Cursor's database is read again on every refresh.
+                if let previousCookie, previousCookie != value.cookie {
+                    cachedPlan = nil
+                    planFetchedAt = nil
+                }
+                cachedCredential = nil
             }
-            cachedCredential = value
             notePastedToken()
         case .failure:
             cachedCredential = nil

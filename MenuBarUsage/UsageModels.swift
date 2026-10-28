@@ -3,7 +3,6 @@ import Foundation
 // MARK: - Dates
 
 enum DateParser {
-    private static let lock = NSLock()
     private static let fractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -22,9 +21,6 @@ enum DateParser {
         if let number = Double(trimmed) {
             return parse(number)
         }
-        // Plan, period, and sand decode in parallel, so the formatters are shared under a lock.
-        lock.lock()
-        defer { lock.unlock() }
         return fractional.date(from: trimmed) ?? basic.date(from: trimmed)
     }
 

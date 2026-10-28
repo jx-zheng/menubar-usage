@@ -182,18 +182,22 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertNotEqual(low, UsageFormatting.statusItem(cpu: 37, memory: 68))
     }
 
-    func testStatusItemImageIsReusedForTheSameRoundedPercents() throws {
-        let parts = UsageFormatting.statusItem(cpu: 36.2, memory: 68.4)
-        let first = try XCTUnwrap(StatusItemArtwork.image(for: parts))
-        let second = try XCTUnwrap(StatusItemArtwork.image(for: UsageFormatting.statusItem(cpu: 36.4, memory: 67.6)))
-        XCTAssertTrue(first === second)
-        XCTAssertTrue(first.isTemplate)
+    @MainActor
+    func testStatusImageStaysPutWhenRoundedPercentsMatch() {
+        let model = AppModel()
+        model.noteCpuReading(36.2)
+        model.noteMemoryReading(SystemSampler.Memory(usedBytes: 684, totalBytes: 1_000))
+        let first = model.statusImage
+        XCTAssertNotNil(first)
+        XCTAssertTrue(first?.isTemplate ?? false)
 
-        let changed = try XCTUnwrap(StatusItemArtwork.image(for: UsageFormatting.statusItem(cpu: 37, memory: 68)))
-        XCTAssertFalse(first === changed)
-        let restored = try XCTUnwrap(StatusItemArtwork.image(for: parts))
-        XCTAssertFalse(restored === first)
-        XCTAssertEqual(restored.size, first.size)
+        model.noteCpuReading(36.4)
+        model.noteMemoryReading(SystemSampler.Memory(usedBytes: 676, totalBytes: 1_000))
+        XCTAssertTrue(first === model.statusImage)
+
+        model.noteCpuReading(37)
+        XCTAssertFalse(first === model.statusImage)
+        XCTAssertEqual(model.statusImage?.size, first?.size)
     }
 
     func testStatusItemImageDrawsBothSymbolsAndBothPercents() throws {

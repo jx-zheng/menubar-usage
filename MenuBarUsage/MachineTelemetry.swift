@@ -199,51 +199,17 @@ enum LinkCounters {
 }
 
 enum PrimaryInterface {
-    /// How long a resolved interface name is reused. Notifications mark it stale sooner.
+    /// How long a resolved interface name is reused.
     static let refreshInterval: TimeInterval = 45
 
-    private static let queue = DispatchQueue(label: "com.jxzheng.menubar-usage.primary-interface")
-    private static let setupLock = NSLock()
     private static var store: SCDynamicStore?
-    private static var ready = false
     private static var cache = TimedCache<String?>(ttl: refreshInterval)
 
-    private static let changeCallback: SCDynamicStoreCallBack = { _, _, _ in
-        PrimaryInterface.noteStoreChange()
-    }
-
     static func name(now: Date = Date()) -> String? {
-        ensureStore()
-        return queue.sync {
-            cache.resolve(now: now) { readPrimary() }.value
+        if store == nil {
+            store = SCDynamicStoreCreate(nil, "com.jxzheng.menubar-usage" as CFString, nil, nil)
         }
-    }
-
-    /// One store for the process. Key changes mark the cached interface stale;
-    /// the next sample reads it again, and the name is also refreshed on `refreshInterval`.
-    private static func ensureStore() {
-        setupLock.lock()
-        defer { setupLock.unlock() }
-        guard !ready else { return }
-        ready = true
-        guard let created = SCDynamicStoreCreate(
-            nil,
-            "com.jxzheng.menubar-usage" as CFString,
-            changeCallback,
-            nil
-        ) else { return }
-        let keys = ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"] as CFArray
-        SCDynamicStoreSetNotificationKeys(created, keys, nil)
-        SCDynamicStoreSetDispatchQueue(created, queue)
-        store = created
-    }
-
-    private static func noteStoreChange() {
-        // Hop onto `queue` even when the callback is already there, so this never
-        // `sync`s the queue it is running on. `name()` is the other writer.
-        queue.async {
-            cache.markStale()
-        }
+        return cache.resolve(now: now) { readPrimary() }.value
     }
 
     private static func readPrimary() -> String? {

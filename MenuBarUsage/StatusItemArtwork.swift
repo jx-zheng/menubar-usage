@@ -23,42 +23,19 @@ enum StatusAccessibility {
 enum StatusItemArtwork {
     static let menuPointSize: CGFloat = 13
 
-    private static let cacheLock = NSLock()
-    private static var cachedKey: CacheKey?
-    private static var cachedImage: NSImage?
     private static var cachedMemorySymbol: String?
     private static var fonts: [CGFloat: NSFont] = [:]
     private static var symbolConfigurations: [CGFloat: NSImage.SymbolConfiguration] = [:]
     private static var symbolImages: [SymbolKey: NSImage] = [:]
-
-    private struct CacheKey: Equatable {
-        var parts: StatusItemParts
-        var pointSize: CGFloat
-        var memorySymbol: String
-    }
 
     private struct SymbolKey: Hashable {
         var name: String
         var pointSize: CGFloat
     }
 
-    /// Last parts → image. Equal rounded percents reuse the template image.
+    /// Draws a new template image. Callers skip this when the rounded percents are unchanged.
     static func image(for parts: StatusItemParts, pointSize: CGFloat = menuPointSize) -> NSImage? {
-        let symbol = resolvedMemorySymbol()
-        let key = CacheKey(parts: parts, pointSize: pointSize, memorySymbol: symbol)
-        cacheLock.lock()
-        if key == cachedKey, let cachedImage {
-            cacheLock.unlock()
-            return cachedImage
-        }
-        cacheLock.unlock()
-
-        let rendered = draw(parts, pointSize: pointSize, memorySymbol: symbol)
-        cacheLock.lock()
-        cachedKey = key
-        cachedImage = rendered
-        cacheLock.unlock()
-        return rendered
+        draw(parts, pointSize: pointSize, memorySymbol: resolvedMemorySymbol())
     }
 
     /// Writes a 4× preview of the `36%` / `68%` label. Same drawing path as the menu bar.
@@ -82,12 +59,7 @@ enum StatusItemArtwork {
     }
 
     static func resolvedMemorySymbol() -> String {
-        cacheLock.lock()
-        if let cachedMemorySymbol {
-            cacheLock.unlock()
-            return cachedMemorySymbol
-        }
-        cacheLock.unlock()
+        if let cachedMemorySymbol { return cachedMemorySymbol }
         var resolved = StatusItemParts.memorySymbol
         for name in [StatusItemParts.memorySymbol, StatusItemParts.memorySymbolFallback] {
             if NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil {
@@ -95,9 +67,7 @@ enum StatusItemArtwork {
                 break
             }
         }
-        cacheLock.lock()
         cachedMemorySymbol = resolved
-        cacheLock.unlock()
         return resolved
     }
 
@@ -143,8 +113,6 @@ enum StatusItemArtwork {
     }
 
     private static func attributed(_ tokens: [StatusItemParts.Token], pointSize: CGFloat) -> NSAttributedString {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
         let font = font(pointSize: pointSize)
         let textAttributes: [NSAttributedString.Key: Any] = [
             .font: font,

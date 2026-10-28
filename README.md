@@ -43,7 +43,7 @@ The panel opens on this Mac. CPU, memory, network, and battery are the first gro
 
 - **CPU**: percent from Mach host CPU ticks, an “All cores” line, and a graph of recent samples scaled from 0 to 100. Refreshed about every 3 seconds while the panel is open, and about every 5 seconds while it is closed. The first percent arrives after the second tick, about a second after launch. Sampling pauses while the Mac is asleep, the displays are asleep, or the session is locked.
 - **Memory**: used and total, and a graph of recent used percent on the same scale and cadence. Used memory is active + wired + compressed pages; the total is `ProcessInfo.physicalMemory`.
-- **Network**: down and up rates for the primary interface, with a short sparkline of recent samples. Same cadence as CPU. The primary interface name is cached for about 45 seconds and refreshed sooner when the system changes it.
+- **Network**: down and up rates for the primary interface, with a short sparkline of recent samples. Same cadence as CPU. The primary interface name is cached for about 45 seconds.
 - **Battery**: percent, whether it is charging, on AC power, or on battery, and time remaining when the system reports it. Desktops with no battery omit this row. Checked about every 30 seconds and when the power source changes. A short sparkline shows recent charge level.
 - **AI usage**: Grok Bot and Cursor pools. About every 90 seconds while the panel is open, and about every 12 minutes while it is closed. Opening the panel refreshes immediately when the last result is more than a minute old. Plan info is requested at most once an hour. A transport failure backs off, up to 30 minutes. The session-token control stays here, collapsed.
 
@@ -62,7 +62,7 @@ The X Subscription shares one weekly Cursor-model pool across Cursor and Grok Bo
 No token is committed, logged, or copied into the repo.
 
 1. A session token you paste is stored in the login Keychain under `com.jxzheng.menubar-usage.session` and is used first. Forget removes it. After a successful read it stays in memory, and it is read from the Keychain again at launch, on save or forget, when Cursor rejects it, and when the token is close to expiring.
-2. Otherwise the app reads `cursorAuth/accessToken` from Cursor's local `state.vscdb` and builds a `WorkosCursorSessionToken` cookie from the JWT `sub` and the token. That token is not written to the Keychain.
+2. Otherwise the app reads `cursorAuth/accessToken` from Cursor's local `state.vscdb` on each refresh and builds a `WorkosCursorSessionToken` cookie from the JWT `sub` and the token. That token is not written to the Keychain and is not kept for the next refresh.
 
 Databases, first match that has a usable token:
 
