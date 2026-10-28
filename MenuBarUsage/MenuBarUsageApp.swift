@@ -6,6 +6,9 @@ struct MenuBarUsageApp: App {
     @StateObject private var model: AppModel
 
     init() {
+        if let url = statusImageURL() {
+            exit(StatusItemArtwork.writePreview(to: url))
+        }
         if CommandLine.arguments.contains("--dump") {
             DumpReport.runAndExit()
         }
@@ -58,4 +61,12 @@ private struct StatusLabel: View {
                 .accessibilityLabel(model.accessibilitySummary)
         }
     }
+}
+
+private func statusImageURL() -> URL? {
+    let arguments = CommandLine.arguments
+    guard let index = arguments.firstIndex(of: "--dump-status-image"), index + 1 < arguments.count else {
+        return nil
+    }
+    return URL(fileURLWithPath: arguments[index + 1])
 }
