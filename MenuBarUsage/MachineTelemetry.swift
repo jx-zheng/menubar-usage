@@ -209,7 +209,7 @@ enum PrimaryInterface {
         if store == nil {
             store = SCDynamicStoreCreate(nil, "com.jxzheng.menubar-usage" as CFString, nil, nil)
         }
-        return cache.resolve(now: now) { readPrimary() }.value
+        return cache.resolve(now: now) { readPrimary() }
     }
 
     private static func readPrimary() -> String? {

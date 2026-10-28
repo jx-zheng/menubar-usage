@@ -310,6 +310,16 @@ final class SessionFreshnessTests: XCTestCase {
         )
     }
 
+    func testPlanOwnerStaysPutWhenTheSameUserRotatesTokens() {
+        let first = Self.jwt(subject: "google-oauth2|user_ONE", expiresAt: Date().addingTimeInterval(3_600))
+        let rotated = Self.jwt(subject: "google-oauth2|user_ONE", expiresAt: Date().addingTimeInterval(7_200))
+        let other = Self.jwt(subject: "google-oauth2|user_TWO", expiresAt: Date().addingTimeInterval(3_600))
+        let original = SessionCredentialFreshness.userIdentity(of: "user_ONE%3A%3A\(first)")
+        XCTAssertEqual(original, "user_ONE")
+        XCTAssertEqual(original, SessionCredentialFreshness.userIdentity(of: "user_ONE%3A%3A\(rotated)"))
+        XCTAssertNotEqual(original, SessionCredentialFreshness.userIdentity(of: "user_TWO%3A%3A\(other)"))
+    }
+
     private static func jwt(subject: String, expiresAt: Date) -> String {
         func part(_ object: [String: Any]) -> String {
             let data = try! JSONSerialization.data(withJSONObject: object)
@@ -599,30 +609,24 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertEqual(history, [2, 3, 4])
     }
 
-    func testPrimaryInterfaceCacheReusesAValueUntilItIsStale() {
+    func testPrimaryInterfaceCacheReusesAValueUntilItExpires() {
         var cache = TimedCache<String?>(ttl: 45)
         let start = Date(timeIntervalSince1970: 1_000)
         var reads = 0
         let first = cache.resolve(now: start) { reads += 1; return "en0" }
         let second = cache.resolve(now: start.addingTimeInterval(30)) { reads += 1; return "en1" }
-        XCTAssertEqual(first.value, "en0")
-        XCTAssertTrue(first.refreshed)
-        XCTAssertEqual(second.value, "en0")
-        XCTAssertFalse(second.refreshed)
+        XCTAssertEqual(first, "en0")
+        XCTAssertEqual(second, "en0")
         XCTAssertEqual(reads, 1)
 
-        cache.markStale()
-        let third = cache.resolve(now: start.addingTimeInterval(31)) { reads += 1; return nil as String? }
-        XCTAssertTrue(third.refreshed)
-        XCTAssertNil(third.value)
-        let fourth = cache.resolve(now: start.addingTimeInterval(40)) { reads += 1; return "en1" }
-        XCTAssertEqual(fourth.value, nil as String?)
-        XCTAssertFalse(fourth.refreshed)
+        let expired = cache.resolve(now: start.addingTimeInterval(45)) { reads += 1; return nil as String? }
+        XCTAssertNil(expired)
+        let stillCached = cache.resolve(now: start.addingTimeInterval(50)) { reads += 1; return "en1" }
+        XCTAssertNil(stillCached)
         XCTAssertEqual(reads, 2)
 
-        let fifth = cache.resolve(now: start.addingTimeInterval(31 + 45)) { reads += 1; return "en1" }
-        XCTAssertEqual(fifth.value, "en1")
-        XCTAssertTrue(fifth.refreshed)
+        let refreshed = cache.resolve(now: start.addingTimeInterval(90)) { reads += 1; return "en1" }
+        XCTAssertEqual(refreshed, "en1")
         XCTAssertEqual(reads, 3)
     }
 }

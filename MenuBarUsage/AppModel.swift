@@ -80,6 +80,8 @@ final class AppModel: ObservableObject {
     private var cachedCredential: SessionCredential?
     private var cachedPlan: PlanInfoDTO?
     private var planFetchedAt: Date?
+    /// JWT user id the cached plan belongs to. Token rotation keeps the same id.
+    private var planOwner: String?
     private var lastBatterySample = Date.distantPast
     private var notificationTokens: [NSObjectProtocol] = []
     private var resumeContinuations: [CheckedContinuation<Void, Never>] = []
@@ -366,29 +368,27 @@ final class AppModel: ObservableObject {
         if cachedCredential?.source == .keychain {
             KeychainTokenStore.invalidateCache()
         }
-        let previousCookie = cachedCredential?.cookie
         let result = SessionResolver.resolve(allowKeychain: !suppressKeychain)
         switch result {
         case let .success(value):
-            if value.source == .keychain {
-                if previousCookie != value.cookie {
-                    cachedPlan = nil
-                    planFetchedAt = nil
-                }
-                cachedCredential = value
-            } else {
-                // Cursor's database is read again on every refresh.
-                if let previousCookie, previousCookie != value.cookie {
-                    cachedPlan = nil
-                    planFetchedAt = nil
-                }
-                cachedCredential = nil
-            }
+            notePlanOwner(value.cookie)
+            // Only a pasted token is reused. Cursor's database is read every refresh.
+            cachedCredential = value.source == .keychain ? value : nil
             notePastedToken()
         case .failure:
             cachedCredential = nil
         }
         return result
+    }
+
+    /// Drops plan info when the signed-in user changes. A new JWT for the same user does not.
+    private func notePlanOwner(_ cookie: String) {
+        guard let owner = SessionCredentialFreshness.userIdentity(of: cookie) else { return }
+        if let planOwner, planOwner != owner {
+            cachedPlan = nil
+            planFetchedAt = nil
+        }
+        planOwner = owner
     }
 
     /// A denied Keychain prompt is not cached, so a later successful read must show Forget.

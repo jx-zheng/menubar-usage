@@ -190,9 +190,13 @@ enum KeychainTokenStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
-        cached = nil
-        hasCache = true
+        let status = SecItemDelete(query as CFDictionary)
+        if status == errSecSuccess || status == errSecItemNotFound {
+            cached = nil
+            hasCache = true
+        } else {
+            invalidateCache()
+        }
     }
 
     private static func readKeychain() -> (OSStatus, String?) {
@@ -222,15 +226,24 @@ enum SessionCredentialFreshness {
     }
 
     static func expiration(of cookie: String) -> Date? {
-        let jwt: String
+        JWTClaims.decode(jwt(in: cookie))?.expiresAt
+    }
+
+    /// Stable across token rotation. Prefers the `user_` id inside `sub`.
+    static func userIdentity(of cookie: String) -> String? {
+        guard let claims = JWTClaims.decode(jwt(in: cookie)) else { return nil }
+        if let userId = claims.userId, !userId.isEmpty { return userId }
+        return claims.subject
+    }
+
+    private static func jwt(in cookie: String) -> String {
         if let range = cookie.range(of: "%3A%3A", options: .caseInsensitive) {
-            jwt = String(cookie[range.upperBound...])
-        } else if let range = cookie.range(of: "::") {
-            jwt = String(cookie[range.upperBound...])
-        } else {
-            jwt = cookie
+            return String(cookie[range.upperBound...])
         }
-        return JWTClaims.decode(jwt)?.expiresAt
+        if let range = cookie.range(of: "::") {
+            return String(cookie[range.upperBound...])
+        }
+        return cookie
     }
 }
 

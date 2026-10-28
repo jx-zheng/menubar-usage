@@ -49,27 +49,21 @@ enum UsageSchedule {
     }
 }
 
-/// Remembers a value until it is marked stale or `ttl` elapses.
+/// Remembers a value until `ttl` elapses.
 struct TimedCache<Value> {
     var ttl: TimeInterval
     private var entry: (value: Value, at: Date)?
-    private(set) var isStale = true
 
     init(ttl: TimeInterval) {
         self.ttl = ttl
     }
 
-    mutating func markStale() {
-        isStale = true
-    }
-
-    mutating func resolve(now: Date, read: () -> Value) -> (value: Value, refreshed: Bool) {
-        if !isStale, let entry, now.timeIntervalSince(entry.at) < ttl {
-            return (entry.value, false)
+    mutating func resolve(now: Date, read: () -> Value) -> Value {
+        if let entry, now.timeIntervalSince(entry.at) < ttl {
+            return entry.value
         }
         let value = read()
         entry = (value, now)
-        isStale = false
-        return (value, true)
+        return value
     }
 }
