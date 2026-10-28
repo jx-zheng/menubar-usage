@@ -51,7 +51,9 @@ final class UsageClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         nil
     }
 
-    func fetch(cookie: String) async throws -> UsageFetch {
+    /// `includePlan` is false when plan info was fetched within the last hour.
+    /// The summary request stays first so an auth failure does not fan out.
+    func fetch(cookie: String, includePlan: Bool = true) async throws -> UsageFetch {
         let summaryData = try await send(
             url: URL(string: "https://cursor.com/api/usage-summary")!,
             method: "GET",
@@ -66,21 +68,15 @@ final class UsageClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
             throw UsageClientError.undecodable
         }
 
-        let plan = await sendOptional(
-            url: URL(string: "https://cursor.com/api/dashboard/get-plan-info")!,
-            method: "POST",
-            cookie: cookie,
-            referer: "https://cursor.com/dashboard/usage",
-            as: PlanInfoDTO.self
-        )
-        let period = await sendOptional(
+        let planValue = await loadPlan(includePlan, cookie: cookie)
+        let periodValue = await sendOptional(
             url: URL(string: "https://cursor.com/api/dashboard/get-current-period-usage")!,
             method: "POST",
             cookie: cookie,
             referer: "https://cursor.com/dashboard/usage",
             as: PeriodUsageDTO.self
         )
-        let sand = await sendOptional(
+        let sandValue = await sendOptional(
             url: URL(string: "https://cursor.com/api/dashboard/get-sand-usage-status")!,
             method: "POST",
             cookie: cookie,
@@ -90,10 +86,21 @@ final class UsageClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 
         return UsageFetch(
             summary: summary,
-            plan: plan,
-            period: period,
-            sand: sand,
-            sandFailed: sand == nil
+            plan: planValue,
+            period: periodValue,
+            sand: sandValue,
+            sandFailed: sandValue == nil
+        )
+    }
+
+    private func loadPlan(_ include: Bool, cookie: String) async -> PlanInfoDTO? {
+        guard include else { return nil }
+        return await sendOptional(
+            url: URL(string: "https://cursor.com/api/dashboard/get-plan-info")!,
+            method: "POST",
+            cookie: cookie,
+            referer: "https://cursor.com/dashboard/usage",
+            as: PlanInfoDTO.self
         )
     }
 

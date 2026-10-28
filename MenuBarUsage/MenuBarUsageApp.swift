@@ -31,7 +31,17 @@ private struct UsagePanelHost: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
+        // Machine samples are published only while this window is open, so a
+        // hidden panel does not rebuild on the sampler tick. `onAppear` refreshes
+        // AI usage when the last result is older than a minute. The body is not
+        // gated on that flag: the flag flips in `onAppear`, which is after the
+        // first layout, and an empty branch there would flash a blank window.
+        // If this host stays mounted after dismiss, `onDisappear` and the panel
+        // window resigning key stop those publishes. The status item
+        // reads a cached image and does not draw a new one for other updates.
         UsagePanelView(content: model.content, actions: actions)
+            .onAppear { model.panelDidOpen() }
+            .onDisappear { model.panelDidClose() }
     }
 
     private var actions: PanelActions {
@@ -51,15 +61,15 @@ private struct StatusLabel: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        // Read the published samples directly so the label invalidates for both.
-        let parts = UsageFormatting.statusItem(cpu: model.cpuPercent, memory: model.memory?.percent)
-        if let image = StatusItemArtwork.image(for: parts) {
-            // One template image, framed to its full point size. A stack gets
-            // clipped after the CPU pair, and Text+Image drops the symbols.
+        // `statusImage` changes only when the rounded CPU and memory percents
+        // change. Other publishes reuse that NSImage; the bitmap is not rebuilt.
+        // One template image, framed to its full point size. A stack gets
+        // clipped after the CPU pair, and Text+Image drops the symbols.
+        if let image = model.statusImage {
             Image(nsImage: image)
                 .frame(width: image.size.width, height: image.size.height)
                 .fixedSize()
-                .accessibilityLabel(model.accessibilitySummary)
+                .accessibilityLabel(model.statusAccessibility)
         }
     }
 }

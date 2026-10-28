@@ -4,6 +4,18 @@ import Foundation
 /// CPU and memory samples from the Mach host. CPU percent needs two ticks
 /// a couple of seconds apart; memory is a single reading.
 enum SystemSampler {
+    /// The host port does not change for the life of the process.
+    static let host: mach_port_t = mach_host_self()
+
+    /// Page size is fixed for the boot. `nil` if the kernel would not report it.
+    static let pageSize: UInt64? = {
+        var size: vm_size_t = 0
+        guard host_page_size(host, &size) == KERN_SUCCESS, size > 0 else { return nil }
+        return UInt64(size)
+    }()
+
+    static let physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
+
     struct CPUTicks: Equatable {
         var user: UInt32
         var system: UInt32
@@ -26,7 +38,7 @@ enum SystemSampler {
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.stride / MemoryLayout<integer_t>.stride)
         let result = withUnsafeMutablePointer(to: &info) { pointer -> kern_return_t in
             pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
-                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, rebound, &count)
+                host_statistics(host, HOST_CPU_LOAD_INFO, rebound, &count)
             }
         }
         guard result == KERN_SUCCESS else { return nil }
@@ -56,17 +68,13 @@ enum SystemSampler {
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride)
         let result = withUnsafeMutablePointer(to: &stats) { pointer -> kern_return_t in
             pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, rebound, &count)
+                host_statistics64(host, HOST_VM_INFO64, rebound, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return nil }
-        var pageSize: vm_size_t = 0
-        guard host_page_size(mach_host_self(), &pageSize) == KERN_SUCCESS, pageSize > 0 else {
-            return nil
-        }
+        guard result == KERN_SUCCESS, let pageSize else { return nil }
         let usedPages = UInt64(stats.active_count) + UInt64(stats.wire_count) + UInt64(stats.compressor_page_count)
-        let total = ProcessInfo.processInfo.physicalMemory
-        let used = min(usedPages * UInt64(pageSize), total)
+        let total = physicalMemory
+        let used = min(usedPages * pageSize, total)
         return Memory(usedBytes: used, totalBytes: total)
     }
 }

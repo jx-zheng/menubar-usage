@@ -381,21 +381,31 @@ private extension PanelContent {
 }
 
 enum ByteText {
-    static func string(_ bytes: UInt64) -> String {
+    /// Shared by the panel. Byte count formatting happens on the main thread.
+    private static let formatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .memory
         formatter.allowedUnits = [.useGB, .useMB]
         formatter.includesUnit = true
-        return formatter.string(fromByteCount: Int64(clamping: bytes))
+        return formatter
+    }()
+
+    static func string(_ bytes: UInt64) -> String {
+        formatter.string(fromByteCount: Int64(clamping: bytes))
     }
 }
 
 enum ResetText {
+    /// Shared by the panel. Relative formatting happens on the main thread.
+    private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
     static func line(for date: Date, now: Date = Date()) -> String {
         let day = date.formatted(.dateTime.month(.abbreviated).day().year())
         guard date > now else { return "Reset \(day)" }
-        let relative = RelativeDateTimeFormatter()
-        relative.unitsStyle = .full
         return "Resets \(day) · \(relative.localizedString(for: date, relativeTo: now))"
     }
 }
