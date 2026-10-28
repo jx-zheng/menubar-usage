@@ -301,7 +301,6 @@ final class AppModel: ObservableObject {
             cachedPlan = nil
             planFetchedAt = nil
             planOwner = nil
-            planEpoch += 1
             KeychainTokenStore.invalidateCache()
             if credential.source == .keychain, case .success = SessionResolver.databaseCredential() {
                 suppressKeychain = true
@@ -343,7 +342,6 @@ final class AppModel: ObservableObject {
         statusMessage = nil
         nextUsageFetchAt = Date()
         interruptSleepers()
-        Task { await refreshUsage() }
         return nil
     }
 
@@ -358,7 +356,6 @@ final class AppModel: ObservableObject {
         planEpoch += 1
         nextUsageFetchAt = Date()
         interruptSleepers()
-        Task { await refreshUsage() }
     }
 
     func openCursor() {
