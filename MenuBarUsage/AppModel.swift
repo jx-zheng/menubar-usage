@@ -242,7 +242,6 @@ final class AppModel: ObservableObject {
             return
         }
         let epoch = planEpoch
-        let requestedOwner = SessionCredentialFreshness.userIdentity(of: credential.cookie)
 
         do {
             let now = Date()
@@ -252,8 +251,7 @@ final class AppModel: ObservableObject {
                 noteStaleUsageFetch()
                 return
             }
-            let planStillOwned = requestedOwner == planOwner
-            if includePlan, planStillOwned {
+            if includePlan {
                 if let plan = fetch.plan {
                     cachedPlan = plan
                     planFetchedAt = now
@@ -264,7 +262,7 @@ final class AppModel: ObservableObject {
             }
             let facts = UsageFacts(
                 summary: fetch.summary,
-                plan: planStillOwned ? (fetch.plan ?? cachedPlan) : cachedPlan,
+                plan: fetch.plan ?? cachedPlan,
                 period: fetch.period,
                 sand: fetch.sand,
                 sandFailed: fetch.sandFailed
