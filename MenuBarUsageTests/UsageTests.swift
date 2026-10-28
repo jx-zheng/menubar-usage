@@ -158,24 +158,22 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertEqual(UsageFormatting.percent(0), "0%")
         XCTAssertEqual(UsageFormatting.percent(100), "100%")
         XCTAssertEqual(UsageFormatting.menuPercent(12.7), "13%")
-        let both = UsageFormatting.statusItem(cpu: 42.2, memory: 67.6)
-        XCTAssertEqual(both.cpuPercent, "42%")
-        XCTAssertEqual(both.memoryPercent, "68%")
-        XCTAssertEqual(StatusItemParts.cpuSymbol, "cpu")
-        XCTAssertEqual(StatusItemParts.memorySymbol, "memorychip")
-        XCTAssertFalse([both.cpuPercent, both.memoryPercent].compactMap { $0 }.joined().contains("CPU"))
-        XCTAssertFalse([both.cpuPercent, both.memoryPercent].compactMap { $0 }.joined().contains("Mem"))
+        let both = UsageFormatting.statusItem(cpu: 36.2, memory: 68.4)
+        XCTAssertEqual(both.tokens().map(\.symbol), ["cpu", nil, "memorychip"])
+        XCTAssertEqual(both.tokens().map(\.text), ["36%", "·", "68%"])
+        let visible = both.tokens().map(\.text).joined(separator: " ")
+        XCTAssertFalse(visible.contains("CPU"))
+        XCTAssertFalse(visible.contains("Mem"))
 
         let cpuOnly = UsageFormatting.statusItem(cpu: 42, memory: nil)
-        XCTAssertEqual(cpuOnly.cpuPercent, "42%")
-        XCTAssertNil(cpuOnly.memoryPercent)
+        XCTAssertEqual(cpuOnly.tokens().map(\.symbol), ["cpu"])
+        XCTAssertEqual(cpuOnly.tokens().map(\.text), ["42%"])
 
         let memoryOnly = UsageFormatting.statusItem(cpu: nil, memory: 68)
-        XCTAssertNil(memoryOnly.cpuPercent)
-        XCTAssertEqual(memoryOnly.memoryPercent, "68%")
+        XCTAssertEqual(memoryOnly.tokens().map(\.symbol), ["memorychip"])
+        XCTAssertEqual(memoryOnly.tokens().map(\.text), ["68%"])
 
-        let empty = UsageFormatting.statusItem(cpu: nil, memory: nil)
-        XCTAssertTrue(empty.isEmpty)
+        XCTAssertTrue(UsageFormatting.statusItem(cpu: nil, memory: nil).tokens().isEmpty)
     }
 
     func testPlanName() {
