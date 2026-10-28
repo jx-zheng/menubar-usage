@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -46,29 +47,41 @@ private struct StatusLabel: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        let parts = model.statusParts
-        HStack(spacing: 0) {
-            if let cpu = parts.cpuPercent {
-                metric(symbol: StatusItemParts.cpuSymbol, percent: cpu)
-            }
-            if parts.cpuPercent != nil, parts.memoryPercent != nil {
-                Text(" · ")
-            }
-            if let memory = parts.memoryPercent {
-                metric(symbol: StatusItemParts.memorySymbol, percent: memory)
+        // Read the published samples directly so the label invalidates for both.
+        let parts = UsageFormatting.statusItem(cpu: model.cpuPercent, memory: model.memory?.percent)
+        let tokens = parts.tokens(memorySymbol: Self.memorySymbol)
+        Group {
+            if tokens.isEmpty {
+                EmptyView()
+            } else {
+                // One Text, not nested stacks. MenuBarExtra sizes a multi-view
+                // label to the first pair and clips the memory symbol and percent.
+                line(tokens)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
             }
         }
-        .font(.system(size: 12, weight: .medium))
+        .fixedSize(horizontal: true, vertical: true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.accessibilitySummary)
     }
 
-    private func metric(symbol: String, percent: String) -> some View {
-        HStack(spacing: 0) {
-            Image(systemName: symbol)
-                .symbolRenderingMode(.monochrome)
-            Text(" \(percent)")
-                .monospacedDigit()
+    private static var memorySymbol: String {
+        for name in [StatusItemParts.memorySymbol, StatusItemParts.memorySymbolFallback] {
+            if NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil {
+                return name
+            }
+        }
+        return StatusItemParts.memorySymbol
+    }
+
+    private func line(_ tokens: [StatusItemParts.Token]) -> Text {
+        tokens.reduce(Text("")) { line, token in
+            if let symbol = token.symbol {
+                let mark = Text(Image(systemName: symbol).symbolRenderingMode(.monochrome))
+                return line + mark + Text(" \(token.text)").monospacedDigit()
+            }
+            return line + Text(" \(token.text) ")
         }
     }
 }
