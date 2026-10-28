@@ -473,13 +473,34 @@ enum UsageFormatting {
 }
 
 struct StatusItemParts: Equatable {
+    struct Token: Equatable {
+        var symbol: String?
+        var text: String
+    }
+
     static let cpuSymbol = "cpu"
     static let memorySymbol = "memorychip"
+    static let memorySymbolFallback = "memorychip.fill"
 
     var cpuPercent: String?
     var memoryPercent: String?
 
     var isEmpty: Bool { cpuPercent == nil && memoryPercent == nil }
+
+    /// Flat sequence the menu bar draws as one line: symbol, percent, dot, symbol, percent.
+    func tokens(memorySymbol: String = StatusItemParts.memorySymbol) -> [Token] {
+        var tokens: [Token] = []
+        if let cpuPercent {
+            tokens.append(Token(symbol: Self.cpuSymbol, text: cpuPercent))
+        }
+        if cpuPercent != nil, memoryPercent != nil {
+            tokens.append(Token(symbol: nil, text: "·"))
+        }
+        if let memoryPercent {
+            tokens.append(Token(symbol: memorySymbol, text: memoryPercent))
+        }
+        return tokens
+    }
 }
 
 enum UsagePresenter {
