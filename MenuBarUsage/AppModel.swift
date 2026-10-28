@@ -81,14 +81,18 @@ final class AppModel: ObservableObject {
         )
     }
 
-    var menuBarText: String? {
+    var statusParts: StatusItemParts {
         UsageFormatting.statusItem(cpu: cpuPercent, memory: memory?.percent)
     }
 
     var accessibilitySummary: String {
         var parts = ["Menu Bar Usage"]
-        if let text = menuBarText {
-            parts.append(text)
+        let item = statusParts
+        if let cpu = item.cpuPercent {
+            parts.append("CPU \(cpu)")
+        }
+        if let memory = item.memoryPercent {
+            parts.append("memory \(memory)")
         }
         if let authMessage {
             parts.append(authMessage)
