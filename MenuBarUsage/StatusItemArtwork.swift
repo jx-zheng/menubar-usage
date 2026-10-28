@@ -1,11 +1,47 @@
 import AppKit
 
-/// One template image for the menu bar. `MenuBarExtra` clips a stack after the
-/// first pair, and `Text` + `Image` drops SF Symbols, so both symbols and
-/// percents are drawn into a single bitmap.
+/// Menu bar artwork. A SwiftUI stack clips after the CPU pair, and `Text` +
+/// `Image` drops SF Symbols. A hand-scaled bitmap shears the digits, so this
+/// lays the line out with AppKit text in a flipped image and does not touch
+/// the context transform.
 enum StatusItemArtwork {
-    static func image(for parts: StatusItemParts) -> NSImage? {
-        image(tokens: parts.tokens(memorySymbol: resolvedMemorySymbol()))
+    static let menuPointSize: CGFloat = 13
+
+    static func image(for parts: StatusItemParts, pointSize: CGFloat = menuPointSize) -> NSImage? {
+        let string = attributed(parts.tokens(memorySymbol: resolvedMemorySymbol()), pointSize: pointSize)
+        guard string.length > 0 else { return nil }
+        let bounds = string.boundingRect(
+            with: NSSize(width: 4_000, height: 800),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        let size = NSSize(width: ceil(bounds.width) + 2, height: ceil(bounds.height) + 4)
+        guard size.width > 1, size.height > 1 else { return nil }
+        let image = NSImage(size: size, flipped: true) { rect in
+            string.draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading])
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    /// Writes a 4× preview of the `36%` / `68%` label. Same drawing path as the menu bar.
+    static func writePreview(to url: URL) -> Int32 {
+        let sample = UsageFormatting.statusItem(cpu: 36, memory: 68)
+        guard let menu = image(for: sample),
+              let preview = image(for: sample, pointSize: menuPointSize * 4),
+              let png = previewPNG(of: preview) else {
+            fputs("Could not draw the status item.\n", stderr)
+            return 1
+        }
+        do {
+            try png.write(to: url)
+        } catch {
+            fputs("Could not write \(url.path): \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+        let point = menu.size
+        print("status image \(Int(point.width))×\(Int(point.height)) pt, 4× preview \(url.path)")
+        return 0
     }
 
     static func resolvedMemorySymbol() -> String {
@@ -17,48 +53,38 @@ enum StatusItemArtwork {
         return StatusItemParts.memorySymbol
     }
 
-    static func image(tokens: [StatusItemParts.Token]) -> NSImage? {
-        guard !tokens.isEmpty else { return nil }
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
-        let attributes: [NSAttributedString.Key: Any] = [
+    private static func attributed(_ tokens: [StatusItemParts.Token], pointSize: CGFloat) -> NSAttributedString {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: pointSize, weight: .medium)
+        let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
+        let textAttributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.black
         ]
-        let symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.black]))
-
-        struct Run {
-            var image: NSImage?
-            var text: NSString
-            var textWidth: CGFloat
-            var imageSize: NSSize
-        }
-
-        let runs: [Run] = tokens.map { token in
-            let text = (token.symbol == nil ? " \(token.text) " : " \(token.text)") as NSString
-            let textSize = text.size(withAttributes: attributes)
-            let symbol = token.symbol.flatMap { name in
-                NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-                    .withSymbolConfiguration(symbolConfiguration)
+        let string = NSMutableAttributedString()
+        for token in tokens {
+            if let name = token.symbol,
+               let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(configuration) {
+                symbol.isTemplate = false
+                let attachment = NSTextAttachment()
+                attachment.image = symbol
+                let baseline = (font.capHeight - symbol.size.height) / 2
+                attachment.bounds = NSRect(x: 0, y: baseline, width: symbol.size.width, height: symbol.size.height)
+                string.append(NSAttributedString(attachment: attachment))
+                string.append(NSAttributedString(string: " \(token.text)", attributes: textAttributes))
+            } else {
+                string.append(NSAttributedString(string: " \(token.text) ", attributes: textAttributes))
             }
-            return Run(
-                image: symbol,
-                text: text,
-                textWidth: ceil(textSize.width),
-                imageSize: symbol?.size ?? .zero
-            )
         }
+        return string
+    }
 
-        let pad: CGFloat = 1
-        let width = pad + runs.reduce(CGFloat(0)) { $0 + $1.imageSize.width + $1.textWidth } + pad
-        let contentHeight = runs.map { max($0.imageSize.height, $0.text.size(withAttributes: attributes).height) }.max() ?? 0
-        let height = max(ceil(contentHeight), 1)
-        let size = NSSize(width: max(ceil(width), 1), height: height)
-        let scale: CGFloat = 2
-        guard let bitmap = NSBitmapImageRep(
+    private static func previewPNG(of image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        guard let matte = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: Int(size.width * scale),
-            pixelsHigh: Int(size.height * scale),
+            pixelsWide: rep.pixelsWide,
+            pixelsHigh: rep.pixelsHigh,
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -67,36 +93,18 @@ enum StatusItemArtwork {
             bytesPerRow: 0,
             bitsPerPixel: 0
         ) else { return nil }
-        bitmap.size = size
-
+        matte.size = NSSize(width: rep.pixelsWide, height: rep.pixelsHigh)
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-        NSGraphicsContext.current?.imageInterpolation = .high
-        let context = NSGraphicsContext.current!.cgContext
-        context.translateBy(x: 0, y: size.height * scale)
-        context.scaleBy(x: scale, y: -scale)
-
-        var x = pad
-        for run in runs {
-            if let symbol = run.image, run.imageSize.width > 0 {
-                let y = (height - run.imageSize.height) / 2
-                symbol.draw(
-                    in: NSRect(x: x, y: y, width: run.imageSize.width, height: run.imageSize.height),
-                    from: NSRect(origin: .zero, size: run.imageSize),
-                    operation: .sourceOver,
-                    fraction: 1
-                )
-                x += run.imageSize.width
-            }
-            let textHeight = run.text.size(withAttributes: attributes).height
-            run.text.draw(at: NSPoint(x: x, y: (height - textHeight) / 2), withAttributes: attributes)
-            x += run.textWidth
-        }
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: matte)
+        NSColor(calibratedWhite: 0.93, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh)).fill()
+        let painted = NSImage(size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh))
+        painted.addRepresentation(rep)
+        painted.isTemplate = false
+        painted.draw(
+            in: NSRect(x: 0, y: 0, width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh))
+        )
         NSGraphicsContext.restoreGraphicsState()
-
-        let image = NSImage(size: size)
-        image.addRepresentation(bitmap)
-        image.isTemplate = true
-        return image
+        return matte.representation(using: .png, properties: [:])
     }
 }
