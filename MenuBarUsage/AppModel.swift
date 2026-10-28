@@ -30,6 +30,7 @@ struct PanelActions {
     var quit: () -> Void
     var openCursor: () -> Void
     var openDashboard: () -> Void
+    var openActivityMonitor: () -> Void
     var saveToken: (String) -> String?
     var forgetToken: () -> Void
 }
@@ -235,6 +236,10 @@ final class AppModel: ObservableObject {
 
     func openDashboard() {
         NSWorkspace.shared.open(URL(string: "https://cursor.com/dashboard/usage")!)
+    }
+
+    func openActivityMonitor() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
     }
 
     func quit() {

@@ -39,9 +39,9 @@ That writes a 4× preview of the `36%` / `68%` label. It does not spell CPU or M
 
 ## What the panel shows
 
-The panel opens on this Mac. CPU, memory, network, and battery are the first group. Cursor and Grok usage follow in a shorter **AI usage** section. There is no "Usage" title and no plan badge at the top. The plan name is a caption on the AI section.
+The panel opens on this Mac. CPU, memory, network, and battery are the first group. Cursor and Grok usage follow in a shorter **AI usage** section. There is no "Usage" title and no plan badge at the top. The plan name is a caption on the AI section. The footer opens Activity Monitor.
 
-- **CPU**: percent from Mach host CPU ticks, and a graph of recent samples scaled from 0 to 100. Refreshed about every 3 seconds. The first percent arrives after the second tick, about a second after launch.
+- **CPU**: percent from Mach host CPU ticks, an “All cores” line, and a graph of recent samples scaled from 0 to 100. Refreshed about every 3 seconds. The first percent arrives after the second tick, about a second after launch.
 - **Memory**: used and total, and a graph of recent used percent on the same scale and cadence. Used memory is active + wired + compressed pages; the total is `ProcessInfo.physicalMemory`.
 - **Network**: down and up rates for the primary interface, with a short sparkline of recent samples. Same cadence as CPU.
 - **Battery**: percent, whether it is charging, on AC power, or on battery, and time remaining when the system reports it. Desktops with no battery omit this row. A short sparkline shows recent charge level.

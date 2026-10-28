@@ -40,6 +40,7 @@ private struct UsagePanelHost: View {
             quit: { model.quit() },
             openCursor: { model.openCursor() },
             openDashboard: { model.openDashboard() },
+            openActivityMonitor: { model.openActivityMonitor() },
             saveToken: { model.savePastedToken($0) },
             forgetToken: { model.forgetPastedToken() }
         )
