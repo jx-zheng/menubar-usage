@@ -6,6 +6,12 @@ struct PanelContent: Equatable {
     var cpuPercent: Double?
     var memoryUsed: UInt64?
     var memoryTotal: UInt64?
+    var networkDown: Double?
+    var networkUp: Double?
+    var networkDownHistory: [Double] = []
+    var networkUpHistory: [Double] = []
+    var battery: BatteryStatus?
+    var batteryHistory: [Double] = []
     var planName: String?
     var note: String?
     var rows: [UsageRow] = []
@@ -30,6 +36,12 @@ struct PanelActions {
 final class AppModel: ObservableObject {
     @Published private(set) var cpuPercent: Double?
     @Published private(set) var memory: SystemSampler.Memory?
+    @Published private(set) var networkDown: Double?
+    @Published private(set) var networkUp: Double?
+    @Published private(set) var networkDownHistory: [Double] = []
+    @Published private(set) var networkUpHistory: [Double] = []
+    @Published private(set) var battery: BatteryStatus?
+    @Published private(set) var batteryHistory: [Double] = []
     @Published private(set) var presentation = UsagePresentation(planName: nil, note: nil, rows: [])
     @Published private(set) var authMessage: String?
     @Published private(set) var statusMessage: String?
@@ -43,12 +55,20 @@ final class AppModel: ObservableObject {
     private var suppressKeychain = false
     private var started = false
     private var pendingStatus: String?
+    private var networkMark: (bytesIn: UInt64, bytesOut: UInt64, at: Date)?
+    private let historyLimit = 30
 
     var content: PanelContent {
         PanelContent(
             cpuPercent: cpuPercent,
             memoryUsed: memory?.usedBytes,
             memoryTotal: memory?.totalBytes,
+            networkDown: networkDown,
+            networkUp: networkUp,
+            networkDownHistory: networkDownHistory,
+            networkUpHistory: networkUpHistory,
+            battery: battery,
+            batteryHistory: batteryHistory,
             planName: presentation.planName,
             note: presentation.note,
             rows: presentation.rows,
@@ -93,6 +113,8 @@ final class AppModel: ObservableObject {
                     previous = ticks
                 }
                 self.memory = SystemSampler.memory()
+                self.sampleNetwork()
+                self.sampleBattery()
                 try? await Task.sleep(nanoseconds: interval)
                 interval = 3_000_000_000
             }
@@ -207,5 +229,32 @@ final class AppModel: ObservableObject {
 
     func quit() {
         NSApp.terminate(nil)
+    }
+
+    private func sampleNetwork() {
+        guard let totals = InterfaceSelection.totals(
+            interfaces: LinkCounters.read(),
+            primary: PrimaryInterface.name()
+        ) else { return }
+        let now = Date()
+        if let mark = networkMark,
+           let down = Throughput.bytesPerSecond(previous: mark.bytesIn, current: totals.bytesIn, seconds: now.timeIntervalSince(mark.at)),
+           let up = Throughput.bytesPerSecond(previous: mark.bytesOut, current: totals.bytesOut, seconds: now.timeIntervalSince(mark.at)) {
+            networkDown = down
+            networkUp = up
+            SampleHistory.append(down, to: &networkDownHistory, limit: historyLimit)
+            SampleHistory.append(up, to: &networkUpHistory, limit: historyLimit)
+        }
+        networkMark = (totals.bytesIn, totals.bytesOut, now)
+    }
+
+    private func sampleBattery() {
+        guard let reading = BatterySampler.read() else {
+            battery = nil
+            batteryHistory = []
+            return
+        }
+        battery = reading
+        SampleHistory.append(reading.percent, to: &batteryHistory, limit: historyLimit)
     }
 }
