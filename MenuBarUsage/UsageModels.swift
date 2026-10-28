@@ -461,13 +461,27 @@ enum UsageFormatting {
         guard value.isFinite else { return "—" }
         return "\(Int(max(0, value).rounded()))%"
     }
+
+    /// Menu bar label: CPU then memory. AI usage stays in the panel.
+    static func statusItem(cpu: Double?, memory: Double?) -> String? {
+        switch (cpu, memory) {
+        case let (cpu?, memory?):
+            return "CPU \(menuPercent(cpu)) · Mem \(menuPercent(memory))"
+        case let (cpu?, nil):
+            return "CPU \(menuPercent(cpu))"
+        case let (nil, memory?):
+            return "Mem \(menuPercent(memory))"
+        default:
+            return nil
+        }
+    }
 }
 
 enum UsagePresenter {
     /// The X Subscription's included Cursor-model pool is weekly and shared by
-    /// Cursor and Grok Bot. Legacy plans keep a separate Grok Bot week plus
-    /// monthly Cursor-model and Other-model pools. Matching numbers are shown
-    /// once.
+    /// Cursor and Grok Bot, so those plans show one included row. Legacy plans
+    /// keep Grok Bot and Cursor models as separate rows. Third-party model
+    /// usage is not shown.
     static func present(_ facts: UsageFacts) -> UsagePresentation {
         let plan = PlanName.format(facts.membershipType) ?? facts.planLabel
         if facts.isUnlimited {
@@ -518,7 +532,7 @@ enum UsagePresenter {
             return nil
         }()
         let reset = facts.weeklyReset ?? grokReset ?? facts.billingCycleEnd
-        var rows = [
+        let rows = [
             UsageRow(
                 id: "included",
                 title: "Included AI usage",
@@ -527,9 +541,6 @@ enum UsagePresenter {
                 resetsAt: reset
             )
         ]
-        if let other = otherRow(facts, shared: true, included: percent) {
-            rows.append(other)
-        }
         return UsagePresentation(
             planName: plan,
             note: "One included pool, shared by Cursor and Grok Bot.",
@@ -546,7 +557,7 @@ enum UsagePresenter {
             rows.append(UsageRow(
                 id: "grok",
                 title: "Grok Bot",
-                detail: "Weekly allowance didn't load.",
+                detail: "Didn't load.",
                 percent: nil,
                 resetsAt: nil
             ))
@@ -554,7 +565,7 @@ enum UsagePresenter {
             rows.append(UsageRow(
                 id: "grok",
                 title: "Grok Bot",
-                detail: "Weekly included allowance.",
+                detail: "",
                 percent: value,
                 resetsAt: reset
             ))
@@ -563,13 +574,10 @@ enum UsagePresenter {
             rows.append(UsageRow(
                 id: "cursor",
                 title: "Cursor models",
-                detail: "Composer and Grok in Cursor.",
+                detail: "",
                 percent: auto,
                 resetsAt: facts.billingCycleEnd
             ))
-        }
-        if let other = otherRow(facts, shared: false, included: nil) {
-            rows.append(other)
         }
         if facts.autoPercent == nil, facts.apiPercent == nil {
             rows.append(UsageRow(
@@ -581,12 +589,9 @@ enum UsagePresenter {
             ))
         }
         let note: String?
-        switch facts.grok {
-        case .noAllowance:
+        if case .noAllowance = facts.grok {
             note = "No separate Grok Bot allowance on this account."
-        case .percent:
-            note = "Grok Bot has its own weekly allowance on this plan."
-        case .unavailable:
+        } else {
             note = nil
         }
         return UsagePresentation(planName: plan, note: note, rows: rows)
@@ -602,23 +607,5 @@ enum UsagePresenter {
         let summaryEmpty = summary.allSatisfy { ($0 ?? 0) < 0.05 }
         if facts.includedPeriodWeekly, summaryEmpty { return nil }
         return facts.totalPercent ?? facts.autoPercent
-    }
-
-    private static func otherRow(_ facts: UsageFacts, shared: Bool, included: Double?) -> UsageRow? {
-        guard let api = facts.apiPercent, api.isFinite else { return nil }
-        if shared {
-            guard let included else { return nil }
-            let auto = facts.autoPercent ?? 0
-            let stubZero = api < 0.05 && auto < 0.05 && included > 0.5
-            if stubZero { return nil }
-            if abs(api - included) < 0.5, abs(auto - api) < 0.5 { return nil }
-        }
-        return UsageRow(
-            id: "other",
-            title: "Other models",
-            detail: "Third-party models, separate from included usage.",
-            percent: api,
-            resetsAt: facts.billingCycleEnd
-        )
     }
 }

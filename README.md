@@ -29,19 +29,20 @@ A non-interactive check prints CPU, memory, the auth source, and usage rows, the
 build/DerivedData/Build/Products/Debug/MenuBarUsage.app/Contents/MacOS/MenuBarUsage --dump
 ```
 
+The status item shows CPU and memory, for example `CPU 42% · Mem 68%`. AI usage stays in the panel.
+
 ## What the panel shows
 
-- CPU percent, from Mach host CPU ticks, refreshed about every 3 seconds.
+- CPU percent, from Mach host CPU ticks, refreshed about every 3 seconds. The card keeps an “All cores” line.
 - Memory used and total. Used memory is active + wired + compressed pages; the total is `ProcessInfo.physicalMemory`.
-- Account usage, refreshed about every 90 seconds.
+- An **AI usage** section, refreshed about every 90 seconds.
 
 Legacy Cursor plans (Pro, Pro+, and the other monthly plans) keep separate meters:
 
-- **Grok Bot** — weekly included allowance and its own reset.
+- **Grok Bot**, with its reset.
 - **Cursor models** — `autoPercentUsed`, reset at `billingCycleEnd`.
-- **Other models** — `apiPercentUsed`, same billing-cycle reset. Zero is shown when the pool exists and is unused.
 
-The X Subscription shares one weekly Cursor-model pool across Cursor and Grok Bot. On that plan the panel shows a single **Included AI usage** row, plus **Other models** only when the response reports a separate pool. The same percentage is not drawn twice. A weekly plan whose monthly `autoPercentUsed` / `apiPercentUsed` fields are both sitting at 0 while the weekly figure is missing is shown as unavailable, not as 0%.
+The X Subscription shares one weekly Cursor-model pool across Cursor and Grok Bot. On that plan the panel shows a single **Included AI usage** row. The same percentage is not drawn twice, and third-party model usage is not listed. A weekly plan whose monthly pools are both sitting at 0 while the weekly figure is missing is shown as unavailable, not as 0%.
 
 `totalPercentUsed` is the included figure only when the two pools are not reported. `plan.used` / `plan.limit` is a different denominator and is not shown next to the pool percentages.
 
