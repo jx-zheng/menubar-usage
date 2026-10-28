@@ -136,7 +136,10 @@ enum KeychainTokenStore {
 
     static func read() -> String? {
         if hasCache { return cached }
-        cached = readKeychain()
+        let (status, value) = readKeychain()
+        // A denied prompt or a locked-item error is not "no token". Leave it uncached.
+        guard status == errSecSuccess || status == errSecItemNotFound else { return nil }
+        cached = value
         hasCache = true
         return cached
     }
@@ -192,7 +195,7 @@ enum KeychainTokenStore {
         hasCache = true
     }
 
-    private static func readKeychain() -> String? {
+    private static func readKeychain() -> (OSStatus, String?) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -202,10 +205,10 @@ enum KeychainTokenStore {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        guard status == errSecSuccess, let data = item as? Data else { return (status, nil) }
         let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let text, !text.isEmpty else { return nil }
-        return text
+        guard let text, !text.isEmpty else { return (status, nil) }
+        return (status, text)
     }
 }
 

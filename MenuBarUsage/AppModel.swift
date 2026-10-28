@@ -67,6 +67,8 @@ final class AppModel: ObservableObject {
     private let historyLimit = 30
 
     private var panelVisible = false
+    /// The popover window that became key. MenuBarExtra hides it; it does not close.
+    private weak var panelWindow: NSWindow?
     private var seededMachineMetrics = false
     private var samplingSuspended = false
     private var dropCPUBaseline = false
@@ -233,8 +235,11 @@ final class AppModel: ObservableObject {
             if includePlan {
                 if let plan = fetch.plan {
                     cachedPlan = plan
+                    planFetchedAt = now
+                } else if cachedPlan != nil {
+                    // A miss while we already have a plan should not retry every poll.
+                    planFetchedAt = now
                 }
-                planFetchedAt = now
             }
             let facts = UsageFacts(
                 summary: fetch.summary,
@@ -495,10 +500,30 @@ final class AppModel: ObservableObject {
                 }
             })
         }
+        // Ctrl-Cmd-Q locks the screen without sleep, display sleep, or session resign.
+        let distributed = DistributedNotificationCenter.default
+        notificationTokens.append(distributed.addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.setSamplingSuspended(true)
+            }
+        })
+        notificationTokens.append(distributed.addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.setSamplingSuspended(false)
+            }
+        })
     }
 
-    /// Backup for a menu-bar window that stays mounted. `onAppear` / `onDisappear`
-    /// are the primary signals; these catch key and close when SwiftUI does not.
+    /// MenuBarExtra hides its window instead of closing it, so `willClose` never fires.
+    /// The window that becomes key is the panel; resigning key is dismiss.
     private func observePanelWindow() {
         let center = NotificationCenter.default
         notificationTokens.append(center.addObserver(
@@ -506,27 +531,28 @@ final class AppModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] note in
-            guard let window = note.object as? NSWindow, Self.isPanelWindow(window) else { return }
+            guard let window = note.object as? NSWindow else { return }
             Task { @MainActor in
-                self?.panelDidOpen()
+                self?.notePanelBecameKey(window)
             }
         })
         notificationTokens.append(center.addObserver(
-            forName: NSWindow.willCloseNotification,
+            forName: NSWindow.didResignKeyNotification,
             object: nil,
             queue: .main
         ) { [weak self] note in
-            guard let window = note.object as? NSWindow, Self.isPanelWindow(window) else { return }
+            guard let window = note.object as? NSWindow else { return }
             Task { @MainActor in
-                self?.panelDidClose()
+                guard let self, window === self.panelWindow else { return }
+                self.panelDidClose()
             }
         })
     }
 
-    /// The popover content is pinned to 332 points. The status item is much narrower.
-    private static func isPanelWindow(_ window: NSWindow) -> Bool {
-        let width = window.frame.width
-        return width >= 300 && width <= 380
+    private func notePanelBecameKey(_ window: NSWindow) {
+        guard panelWindow == nil || window === panelWindow else { return }
+        panelWindow = window
+        panelDidOpen()
     }
 
     private func setSamplingSuspended(_ suspended: Bool) {

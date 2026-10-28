@@ -36,8 +36,8 @@ private struct UsagePanelHost: View {
         // AI usage when the last result is older than a minute. The body is not
         // gated on that flag: the flag flips in `onAppear`, which is after the
         // first layout, and an empty branch there would flash a blank window.
-        // If this host stays mounted after close, `onDisappear` (and the panel
-        // window's close notification) stop those publishes. The status item
+        // If this host stays mounted after dismiss, `onDisappear` and the panel
+        // window resigning key stop those publishes. The status item
         // reads a cached image and does not draw a new one for other updates.
         UsagePanelView(content: model.content, actions: actions)
             .onAppear { model.panelDidOpen() }
