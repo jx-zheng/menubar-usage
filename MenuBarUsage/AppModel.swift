@@ -82,6 +82,8 @@ final class AppModel: ObservableObject {
     private var planFetchedAt: Date?
     /// JWT user id the cached plan belongs to. Token rotation keeps the same id.
     private var planOwner: String?
+    /// Bumped when the signed-in user changes so an in-flight fetch cannot restore the old plan.
+    private var planEpoch = 0
     private var lastBatterySample = Date.distantPast
     private var notificationTokens: [NSObjectProtocol] = []
     private var resumeContinuations: [CheckedContinuation<Void, Never>] = []
@@ -171,10 +173,14 @@ final class AppModel: ObservableObject {
                 await self.waitWhileSuspended()
                 guard !Task.isCancelled else { return }
                 if Date() >= self.nextUsageFetchAt {
+                    let epoch = self.planEpoch
                     if !self.isRefreshing {
                         await self.refreshUsage()
                     }
-                    self.nextUsageFetchAt = Date().addingTimeInterval(self.currentUsageInterval())
+                    // save/forget may have armed an earlier deadline while this fetch ran.
+                    if self.planEpoch == epoch {
+                        self.nextUsageFetchAt = Date().addingTimeInterval(self.currentUsageInterval())
+                    }
                 }
                 let generation = self.sleepGeneration
                 let remaining = self.nextUsageFetchAt.timeIntervalSinceNow
@@ -231,12 +237,16 @@ final class AppModel: ObservableObject {
             refreshStatusItem()
             return
         }
+        let epoch = planEpoch
+        let requestedOwner = SessionCredentialFreshness.userIdentity(of: credential.cookie)
 
         do {
             let now = Date()
             let includePlan = UsageSchedule.shouldFetchPlan(fetchedAt: planFetchedAt, now: now)
             let fetch = try await UsageClient.shared.fetch(cookie: credential.cookie, includePlan: includePlan)
-            if includePlan {
+            guard epoch == planEpoch else { return }
+            let planStillOwned = requestedOwner == planOwner
+            if includePlan, planStillOwned {
                 if let plan = fetch.plan {
                     cachedPlan = plan
                     planFetchedAt = now
@@ -247,7 +257,7 @@ final class AppModel: ObservableObject {
             }
             let facts = UsageFacts(
                 summary: fetch.summary,
-                plan: fetch.plan ?? cachedPlan,
+                plan: planStillOwned ? (fetch.plan ?? cachedPlan) : cachedPlan,
                 period: fetch.period,
                 sand: fetch.sand,
                 sandFailed: fetch.sandFailed
@@ -277,6 +287,8 @@ final class AppModel: ObservableObject {
             cachedCredential = nil
             cachedPlan = nil
             planFetchedAt = nil
+            planOwner = nil
+            planEpoch += 1
             KeychainTokenStore.invalidateCache()
             if credential.source == .keychain, case .success = SessionResolver.databaseCredential() {
                 suppressKeychain = true
@@ -309,9 +321,11 @@ final class AppModel: ObservableObject {
         suppressKeychain = false
         hasPastedToken = true
         cachedCredential = SessionCredential(cookie: cookie, source: .keychain)
-        cachedPlan = nil
-        planFetchedAt = nil
+        notePlanOwner(cookie)
+        planEpoch += 1
         statusMessage = nil
+        nextUsageFetchAt = Date()
+        interruptSleepers()
         Task { await refreshUsage() }
         return nil
     }
@@ -323,6 +337,10 @@ final class AppModel: ObservableObject {
         cachedCredential = nil
         cachedPlan = nil
         planFetchedAt = nil
+        planOwner = nil
+        planEpoch += 1
+        nextUsageFetchAt = Date()
+        interruptSleepers()
         Task { await refreshUsage() }
     }
 
@@ -387,6 +405,7 @@ final class AppModel: ObservableObject {
         if let planOwner, planOwner != owner {
             cachedPlan = nil
             planFetchedAt = nil
+            planEpoch += 1
         }
         planOwner = owner
     }
