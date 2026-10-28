@@ -70,11 +70,13 @@ final class AppModel: ObservableObject {
     /// The popover window that became key. MenuBarExtra hides it; it does not close.
     private weak var panelWindow: NSWindow?
     private var seededMachineMetrics = false
-    private var samplingSuspended = false
+    private var pauseReasons: Set<PauseReason> = []
+    private var samplingSuspended: Bool { !pauseReasons.isEmpty }
     private var dropCPUBaseline = false
     private var sleepGeneration = 0
     private var transportFailures = 0
     private var lastUsageAttemptAt: Date?
+    private var nextUsageFetchAt = Date()
     private var cachedCredential: SessionCredential?
     private var cachedPlan: PlanInfoDTO?
     private var planFetchedAt: Date?
@@ -162,23 +164,22 @@ final class AppModel: ObservableObject {
             }
         }
         usageLoop = Task { [weak self] in
-            var nextFetchAt = Date()
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.waitWhileSuspended()
                 guard !Task.isCancelled else { return }
-                if Date() >= nextFetchAt {
+                if Date() >= self.nextUsageFetchAt {
                     if !self.isRefreshing {
                         await self.refreshUsage()
                     }
-                    nextFetchAt = Date().addingTimeInterval(self.currentUsageInterval())
+                    self.nextUsageFetchAt = Date().addingTimeInterval(self.currentUsageInterval())
                 }
                 let generation = self.sleepGeneration
-                let remaining = nextFetchAt.timeIntervalSinceNow
+                let remaining = self.nextUsageFetchAt.timeIntervalSinceNow
                 let interrupted = await self.sleep(seconds: remaining, generation: generation)
                 guard !Task.isCancelled else { return }
-                if interrupted, !self.samplingSuspended {
-                    nextFetchAt = UsageSchedule.nextDeadline(
+                if interrupted, !self.samplingSuspended, self.nextUsageFetchAt > Date() {
+                    self.nextUsageFetchAt = UsageSchedule.nextDeadline(
                         now: Date(),
                         lastAttempt: self.lastUsageAttemptAt,
                         panelOpen: self.panelVisible,
@@ -195,11 +196,12 @@ final class AppModel: ObservableObject {
         panelVisible = true
         mirrorMachineMetrics()
         guard !wasOpen else { return }
+        // One fetch: arm the usage loop instead of starting a second request here.
+        // A deadline that is already due is left in place when the loop wakes.
+        if started, UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) {
+            nextUsageFetchAt = Date()
+        }
         interruptSleepers()
-        // `start()` owns the first fetch. Tests open the panel without starting the loops.
-        guard started else { return }
-        guard UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) else { return }
-        Task { await refreshUsage() }
     }
 
     func panelDidClose() {
@@ -356,6 +358,7 @@ final class AppModel: ObservableObject {
 
     private func credentialForRefresh() -> Result<SessionCredential, AuthFailure> {
         if let cachedCredential, !SessionCredentialFreshness.isNearExpiry(cachedCredential.cookie) {
+            notePastedToken()
             return .success(cachedCredential)
         }
         if cachedCredential != nil {
@@ -371,10 +374,16 @@ final class AppModel: ObservableObject {
                 planFetchedAt = nil
             }
             cachedCredential = value
+            notePastedToken()
         case .failure:
             cachedCredential = nil
         }
         return result
+    }
+
+    /// A denied Keychain prompt is not cached, so a later successful read must show Forget.
+    private func notePastedToken() {
+        hasPastedToken = KeychainTokenStore.read() != nil
     }
 
     func noteCpuReading(_ percent: Double?) {
@@ -476,27 +485,20 @@ final class AppModel: ObservableObject {
 
     private func observePowerAndSession() {
         let center = NSWorkspace.shared.notificationCenter
-        let pause: [Notification.Name] = [
-            NSWorkspace.willSleepNotification,
-            NSWorkspace.screensDidSleepNotification,
-            NSWorkspace.sessionDidResignActiveNotification
+        let pairs: [(Notification.Name, Notification.Name, PauseReason)] = [
+            (NSWorkspace.willSleepNotification, NSWorkspace.didWakeNotification, .asleep),
+            (NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification, .displaysAsleep),
+            (NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification, .sessionInactive)
         ]
-        let resume: [Notification.Name] = [
-            NSWorkspace.didWakeNotification,
-            NSWorkspace.screensDidWakeNotification,
-            NSWorkspace.sessionDidBecomeActiveNotification
-        ]
-        for name in pause {
-            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        for (pause, resume, reason) in pairs {
+            notificationTokens.append(center.addObserver(forName: pause, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
-                    self?.setSamplingSuspended(true)
+                    self?.setPause(reason, active: true)
                 }
             })
-        }
-        for name in resume {
-            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            notificationTokens.append(center.addObserver(forName: resume, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
-                    self?.setSamplingSuspended(false)
+                    self?.setPause(reason, active: false)
                 }
             })
         }
@@ -508,7 +510,7 @@ final class AppModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.setSamplingSuspended(true)
+                self?.setPause(.locked, active: true)
             }
         })
         notificationTokens.append(distributed.addObserver(
@@ -517,7 +519,7 @@ final class AppModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.setSamplingSuspended(false)
+                self?.setPause(.locked, active: false)
             }
         })
     }
@@ -555,10 +557,15 @@ final class AppModel: ObservableObject {
         panelDidOpen()
     }
 
-    private func setSamplingSuspended(_ suspended: Bool) {
-        guard samplingSuspended != suspended else { return }
-        samplingSuspended = suspended
-        if suspended {
+    private func setPause(_ reason: PauseReason, active: Bool) {
+        let wasSuspended = samplingSuspended
+        if active {
+            pauseReasons.insert(reason)
+        } else {
+            pauseReasons.remove(reason)
+        }
+        guard samplingSuspended != wasSuspended else { return }
+        if samplingSuspended {
             dropCPUBaseline = true
             interruptSleepers()
             return
@@ -618,6 +625,13 @@ final class AppModel: ObservableObject {
         sleepers.removeAll { $0 === box }
         box.finish(interrupted: interrupted)
     }
+}
+
+private enum PauseReason: Hashable {
+    case asleep
+    case displaysAsleep
+    case locked
+    case sessionInactive
 }
 
 /// One in-flight `Task.sleep`. Resumed from the main actor, and only once.
