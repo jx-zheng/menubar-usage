@@ -490,3 +490,39 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertEqual(history, [2, 3, 4])
     }
 }
+
+@MainActor
+final class HostSampleHistoryTests: XCTestCase {
+    func testReadingsFillCpuAndMemoryHistoryOnTheSharedWindow() {
+        let model = AppModel()
+        XCTAssertEqual(model.content.cpuHistory, [])
+        XCTAssertEqual(model.content.memoryHistory, [])
+
+        model.noteCpuReading(3)
+        model.noteMemoryReading(SystemSampler.Memory(usedBytes: 25, totalBytes: 100))
+        XCTAssertEqual(model.content.cpuPercent, 3)
+        XCTAssertEqual(model.content.cpuHistory, [3])
+        XCTAssertEqual(model.content.memoryUsed, 25)
+        XCTAssertEqual(model.content.memoryTotal, 100)
+        XCTAssertEqual(model.content.memoryHistory, [25])
+
+        // A nil delta clears the live reading and does not insert a zero in the graph.
+        model.noteCpuReading(nil)
+        model.noteMemoryReading(nil)
+        XCTAssertNil(model.content.cpuPercent)
+        XCTAssertNil(model.content.memoryUsed)
+        XCTAssertEqual(model.content.cpuHistory, [3])
+        XCTAssertEqual(model.content.memoryHistory, [25])
+
+        for value in 0..<35 {
+            model.noteCpuReading(Double(value))
+            model.noteMemoryReading(SystemSampler.Memory(usedBytes: UInt64(value), totalBytes: 100))
+        }
+        // The early sample plus 0...34 is 36 readings. The panel keeps the newest 30.
+        let newest = Array(5...34).map { Double($0) }
+        XCTAssertEqual(model.content.cpuHistory, newest)
+        XCTAssertEqual(model.content.memoryHistory, newest.map { $0 / 100.0 * 100.0 })
+        XCTAssertEqual(model.content.cpuPercent, 34)
+        XCTAssertEqual(model.content.memoryUsed, 34)
+    }
+}
