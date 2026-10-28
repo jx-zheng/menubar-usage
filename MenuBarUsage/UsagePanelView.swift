@@ -30,7 +30,7 @@ struct UsagePanelView: View {
                     percent: content.memoryPercent
                 )
 
-                sectionTitle("Usage")
+                sectionTitle("AI usage")
                 if let authMessage = content.authMessage {
                     signIn(message: authMessage)
                 } else if content.rows.isEmpty && content.isRefreshing {
@@ -259,10 +259,12 @@ struct UsagePanelView: View {
                     .monospacedDigit()
                     .foregroundStyle(row.percent.map { UsageBar.tint(for: $0) } ?? Color.primary)
             }
-            Text(row.detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if !row.detail.isEmpty {
+                Text(row.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let percent = row.percent, !row.unlimited {
                 UsageBar(percent: percent)
             }
@@ -357,11 +359,9 @@ struct UsageBar: View {
             memoryUsed: 18_400_000_000,
             memoryTotal: 36_000_000_000,
             planName: "Pro+",
-            note: "Grok Bot has its own weekly allowance on this plan.",
             rows: [
-                UsageRow(id: "grok", title: "Grok Bot", detail: "Weekly included allowance.", percent: 12.7, resetsAt: Date().addingTimeInterval(3 * 86_400)),
-                UsageRow(id: "cursor", title: "Cursor models", detail: "Composer and Grok in Cursor.", percent: 34.4, resetsAt: Date().addingTimeInterval(8 * 86_400)),
-                UsageRow(id: "other", title: "Other models", detail: "Third-party models, separate from included usage.", percent: 0, resetsAt: Date().addingTimeInterval(8 * 86_400))
+                UsageRow(id: "grok", title: "Grok Bot", detail: "", percent: 12.7, resetsAt: Date().addingTimeInterval(3 * 86_400)),
+                UsageRow(id: "cursor", title: "Cursor models", detail: "", percent: 34.4, resetsAt: Date().addingTimeInterval(8 * 86_400))
             ],
             isRefreshing: false,
             sessionLabel: "Cursor",

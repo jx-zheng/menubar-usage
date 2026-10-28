@@ -62,30 +62,13 @@ final class AppModel: ObservableObject {
     }
 
     var menuBarText: String? {
-        let grok = presentation.rows.first { $0.id == "grok" }?.percent
-        let cursor = presentation.rows.first { $0.id == "cursor" || $0.id == "included" }?.percent
-        switch (grok, cursor) {
-        case let (g?, c?):
-            return "\(UsageFormatting.menuPercent(g)) · \(UsageFormatting.menuPercent(c))"
-        case let (g?, nil):
-            return UsageFormatting.menuPercent(g)
-        case let (nil, c?):
-            return UsageFormatting.menuPercent(c)
-        default:
-            return presentation.rows.compactMap(\.percent).max().map(UsageFormatting.menuPercent)
-        }
+        UsageFormatting.statusItem(cpu: cpuPercent, memory: memory?.percent)
     }
 
     var accessibilitySummary: String {
         var parts = ["Menu Bar Usage"]
-        if let cpuPercent {
-            parts.append("CPU \(UsageFormatting.menuPercent(cpuPercent))")
-        }
-        if let percent = memory?.percent {
-            parts.append("memory \(UsageFormatting.menuPercent(percent))")
-        }
-        for row in presentation.rows {
-            parts.append("\(row.title) \(row.percentText)")
+        if let text = menuBarText {
+            parts.append(text)
         }
         if let authMessage {
             parts.append(authMessage)
