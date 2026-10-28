@@ -4,8 +4,10 @@ import SwiftUI
 
 struct PanelContent: Equatable {
     var cpuPercent: Double?
+    var cpuHistory: [Double] = []
     var memoryUsed: UInt64?
     var memoryTotal: UInt64?
+    var memoryHistory: [Double] = []
     var networkDown: Double?
     var networkUp: Double?
     var networkDownHistory: [Double] = []
@@ -28,6 +30,7 @@ struct PanelActions {
     var quit: () -> Void
     var openCursor: () -> Void
     var openDashboard: () -> Void
+    var openActivityMonitor: () -> Void
     var saveToken: (String) -> String?
     var forgetToken: () -> Void
 }
@@ -35,7 +38,9 @@ struct PanelActions {
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var cpuPercent: Double?
+    @Published private(set) var cpuHistory: [Double] = []
     @Published private(set) var memory: SystemSampler.Memory?
+    @Published private(set) var memoryHistory: [Double] = []
     @Published private(set) var networkDown: Double?
     @Published private(set) var networkUp: Double?
     @Published private(set) var networkDownHistory: [Double] = []
@@ -61,8 +66,10 @@ final class AppModel: ObservableObject {
     var content: PanelContent {
         PanelContent(
             cpuPercent: cpuPercent,
+            cpuHistory: cpuHistory,
             memoryUsed: memory?.usedBytes,
             memoryTotal: memory?.totalBytes,
+            memoryHistory: memoryHistory,
             networkDown: networkDown,
             networkUp: networkUp,
             networkDownHistory: networkDownHistory,
@@ -112,11 +119,11 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 if let ticks = SystemSampler.cpuTicks() {
                     if let previous {
-                        self.cpuPercent = SystemSampler.cpuPercent(from: previous, to: ticks)
+                        self.noteCpuReading(SystemSampler.cpuPercent(from: previous, to: ticks))
                     }
                     previous = ticks
                 }
-                self.memory = SystemSampler.memory()
+                self.noteMemoryReading(SystemSampler.memory())
                 self.sampleNetwork()
                 self.sampleBattery()
                 try? await Task.sleep(nanoseconds: interval)
@@ -231,8 +238,26 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(URL(string: "https://cursor.com/dashboard/usage")!)
     }
 
+    func openActivityMonitor() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+    }
+
     func quit() {
         NSApp.terminate(nil)
+    }
+
+    func noteCpuReading(_ percent: Double?) {
+        cpuPercent = percent
+        if let percent {
+            SampleHistory.append(percent, to: &cpuHistory, limit: historyLimit)
+        }
+    }
+
+    func noteMemoryReading(_ reading: SystemSampler.Memory?) {
+        memory = reading
+        if let percent = reading?.percent {
+            SampleHistory.append(percent, to: &memoryHistory, limit: historyLimit)
+        }
     }
 
     private func sampleNetwork() {
