@@ -23,6 +23,8 @@ The Debug build is ad-hoc signed so it can run on the machine that built it. For
 
 The built app is an agent, so it shows in the menu bar and not the Dock. Quit with the Quit button in the panel.
 
+Finder, Launchpad, and Applications use the icon in `MenuBarUsage/Assets.xcassets/AppIcon.appiconset`. That set is generated from one mark at every required macOS size. `MenuBarUsage/AppIcon.icon` is the same mark for the macOS 26 icon, including dark and tinted appearances. The menu bar status item is still the CPU and memory symbols, not this icon.
+
 A non-interactive check prints CPU, memory, the auth source, and usage rows, then exits. It does not print the session token:
 
 ```bash
