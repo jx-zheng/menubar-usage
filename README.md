@@ -29,7 +29,7 @@ A non-interactive check prints CPU, memory, the auth source, and usage rows, the
 build/DerivedData/Build/Products/Debug/MenuBarUsage.app/Contents/MacOS/MenuBarUsage --dump
 ```
 
-The status item is one line: a monochrome `cpu` symbol, the CPU percent, a middle dot, a monochrome `memorychip` symbol, and the memory percent. Both pairs stay on that line so the menu bar does not clip the memory pair. It does not spell CPU or Mem, and it does not include the chart-bars icon. Network, battery, and AI usage stay in the panel.
+The status item is one template image: a monochrome `cpu` symbol, the CPU percent, a middle dot, a monochrome `memorychip` symbol, and the memory percent. Drawing both pairs into that image keeps the symbols visible and stops the menu bar from clipping memory. It does not spell CPU or Mem, and it does not include the chart-bars icon. Network, battery, and AI usage stay in the panel.
 
 ## What the panel shows
 
