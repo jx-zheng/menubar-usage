@@ -1,0 +1,11 @@
+.DS_Store
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+.swiftpm/
+.build/
+*.xcscmblueprint
+.env
+*.session
