@@ -28,6 +28,8 @@ enum InterfaceSelection {
 }
 
 enum Throughput {
+    private static let posix = Locale(identifier: "en_US_POSIX")
+
     /// Decimal units, matching how link speeds are usually quoted.
     static func rate(_ bytesPerSecond: Double) -> String {
         let value = max(0, bytesPerSecond)
@@ -41,7 +43,7 @@ enum Throughput {
             if scaled >= 100 || abs(scaled.rounded() - scaled) < 0.05 {
                 return "\(Int(scaled.rounded())) \(unit)"
             }
-            let text = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), scaled)
+            let text = String(format: "%.1f", locale: posix, scaled)
             return "\(text) \(unit)"
         }
         return "\(Int(value.rounded())) B/s"
@@ -197,10 +199,21 @@ enum LinkCounters {
 }
 
 enum PrimaryInterface {
-    static func name() -> String? {
-        guard let store = SCDynamicStoreCreate(nil, "com.jxzheng.menubar-usage" as CFString, nil, nil) else {
-            return nil
+    /// How long a resolved interface name is reused.
+    static let refreshInterval: TimeInterval = 45
+
+    private static var store: SCDynamicStore?
+    private static var cache = TimedCache<String?>(ttl: refreshInterval)
+
+    static func name(now: Date = Date()) -> String? {
+        if store == nil {
+            store = SCDynamicStoreCreate(nil, "com.jxzheng.menubar-usage" as CFString, nil, nil)
         }
+        return cache.resolve(now: now) { readPrimary() }
+    }
+
+    private static func readPrimary() -> String? {
+        guard let store else { return nil }
         for key in ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"] {
             guard let value = SCDynamicStoreCopyValue(store, key as CFString),
                   let dictionary = value as? [String: Any],
@@ -213,6 +226,29 @@ enum PrimaryInterface {
 }
 
 enum BatterySampler {
+    private static let powerCallback: IOPowerSourceCallbackType = { _ in
+        BatterySampler.deliverChange()
+    }
+    private static var onChange: (() -> Void)?
+    private static var runLoopSource: CFRunLoopSource?
+
+    /// Fires on the main queue when a power source is added, removed, or changes state.
+    static func startWatching(_ update: @escaping () -> Void) {
+        onChange = update
+        guard runLoopSource == nil else { return }
+        guard let created = IOPSNotificationCreateRunLoopSource(powerCallback, nil) else { return }
+        let source = created.takeRetainedValue()
+        runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+    }
+
+    private static func deliverChange() {
+        let update = onChange
+        DispatchQueue.main.async {
+            update?()
+        }
+    }
+
     static func read() -> BatteryStatus? {
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue() else { return nil }
         guard let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any] else { return nil }
