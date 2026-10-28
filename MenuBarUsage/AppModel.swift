@@ -173,11 +173,15 @@ final class AppModel: ObservableObject {
                 await self.waitWhileSuspended()
                 guard !Task.isCancelled else { return }
                 if Date() >= self.nextUsageFetchAt {
-                    let epoch = self.planEpoch
-                    if !self.isRefreshing {
-                        await self.refreshUsage()
+                    if self.isRefreshing {
+                        // Another caller owns this fetch. Don't push the quiet/open
+                        // deadline out while its result may be discarded.
+                        let generation = self.sleepGeneration
+                        await self.sleep(seconds: 0.25, generation: generation)
+                        continue
                     }
-                    // save/forget may have armed an earlier deadline while this fetch ran.
+                    let epoch = self.planEpoch
+                    await self.refreshUsage()
                     if self.planEpoch == epoch {
                         self.nextUsageFetchAt = Date().addingTimeInterval(self.currentUsageInterval())
                     }
@@ -244,7 +248,10 @@ final class AppModel: ObservableObject {
             let now = Date()
             let includePlan = UsageSchedule.shouldFetchPlan(fetchedAt: planFetchedAt, now: now)
             let fetch = try await UsageClient.shared.fetch(cookie: credential.cookie, includePlan: includePlan)
-            guard epoch == planEpoch else { return }
+            guard epoch == planEpoch else {
+                noteStaleUsageFetch()
+                return
+            }
             let planStillOwned = requestedOwner == planOwner
             if includePlan, planStillOwned {
                 if let plan = fetch.plan {
@@ -277,12 +284,20 @@ final class AppModel: ObservableObject {
             }
             refreshStatusItem()
         } catch UsageClientError.transport {
+            guard epoch == planEpoch else {
+                noteStaleUsageFetch()
+                return
+            }
             transportFailures = min(transportFailures + 1, 6)
             statusMessage = UsageClientError.transport.localizedDescription
             if sessionLabel == nil {
                 sessionLabel = credential.source.label
             }
         } catch UsageClientError.unauthorized {
+            guard epoch == planEpoch else {
+                noteStaleUsageFetch()
+                return
+            }
             transportFailures = 0
             cachedCredential = nil
             cachedPlan = nil
@@ -303,6 +318,10 @@ final class AppModel: ObservableObject {
             statusMessage = nil
             refreshStatusItem()
         } catch {
+            guard epoch == planEpoch else {
+                noteStaleUsageFetch()
+                return
+            }
             transportFailures = 0
             statusMessage = error.localizedDescription
             if sessionLabel == nil {
@@ -397,6 +416,12 @@ final class AppModel: ObservableObject {
             cachedCredential = nil
         }
         return result
+    }
+
+    /// The account changed while this request was in flight. Fetch again instead of waiting out the cadence.
+    private func noteStaleUsageFetch() {
+        nextUsageFetchAt = Date()
+        interruptSleepers()
     }
 
     /// Drops plan info when the signed-in user changes. A new JWT for the same user does not.
