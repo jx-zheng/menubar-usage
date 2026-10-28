@@ -7,7 +7,7 @@ final class UsagePresenterTests: XCTestCase {
     private let cycleEnd = DateParser.parse("2026-11-05T06:01:20Z")!
     private let weekEnd = DateParser.parse("2026-10-30T00:00:00Z")!
 
-    func testLegacyPlanShowsGrokBotCursorModelsAndOtherModels() {
+    func testLegacyPlanShowsGrokBotAndCursorModels() {
         let facts = UsageFacts(
             membershipType: "pro_plus",
             planLabel: "Pro+",
@@ -22,15 +22,16 @@ final class UsagePresenterTests: XCTestCase {
         let presentation = UsagePresenter.present(facts)
 
         XCTAssertEqual(presentation.planName, "Pro+")
-        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor", "other"])
-        XCTAssertEqual(presentation.rows.map(\.percentText), ["12.7%", "34.4%", "0%"])
+        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor"])
+        XCTAssertEqual(presentation.rows.map(\.percentText), ["12.7%", "34.4%"])
+        XCTAssertEqual(presentation.rows.map(\.detail), ["", ""])
         XCTAssertEqual(presentation.rows[0].resetsAt, grokReset)
         XCTAssertEqual(presentation.rows[1].resetsAt, cycleEnd)
-        XCTAssertEqual(presentation.rows[2].resetsAt, cycleEnd)
         XCTAssertFalse(UsagePresenter.sharesPool(facts))
         XCTAssertEqual(presentation.rows[0].title, "Grok Bot")
         XCTAssertEqual(presentation.rows[1].title, "Cursor models")
-        XCTAssertEqual(presentation.rows[2].title, "Other models")
+        XCTAssertNil(presentation.note)
+        XCTAssertFalse(presentation.rows.contains { $0.id == "other" || $0.detail.localizedCaseInsensitiveContains("composer") || $0.detail.localizedCaseInsensitiveContains("weekly") })
     }
 
     func testWeeklySharedPoolIsOneIncludedRow() {
@@ -56,7 +57,7 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertEqual(presentation.note, "One included pool, shared by Cursor and Grok Bot.")
     }
 
-    func testWeeklyPlanKeepsARealOtherModelsPool() {
+    func testWeeklyPlanOmitsOtherModels() {
         let facts = UsageFacts(
             membershipType: "premium",
             billingCycleEnd: cycleEnd,
@@ -71,9 +72,9 @@ final class UsagePresenterTests: XCTestCase {
 
         let rows = UsagePresenter.present(facts).rows
 
-        XCTAssertEqual(rows.map(\.id), ["included", "other"])
+        XCTAssertEqual(rows.map(\.id), ["included"])
         XCTAssertEqual(rows[0].percentText, "35.5%")
-        XCTAssertEqual(rows[1].percentText, "8.2%")
+        XCTAssertFalse(rows.contains { $0.id == "other" })
     }
 
     func testWeeklyStubZerosAreNotShownAsZeroPercent() {
@@ -106,7 +107,7 @@ final class UsagePresenterTests: XCTestCase {
 
         let presentation = UsagePresenter.present(facts)
 
-        XCTAssertEqual(presentation.rows.map(\.id), ["cursor", "other"])
+        XCTAssertEqual(presentation.rows.map(\.id), ["cursor"])
         XCTAssertEqual(presentation.note, "No separate Grok Bot allowance on this account.")
     }
 
@@ -120,12 +121,12 @@ final class UsagePresenterTests: XCTestCase {
             grok: .percent(20, resetsAt: cycleEnd)
         )
         XCTAssertTrue(UsagePresenter.sharesPool(shared))
-        XCTAssertEqual(UsagePresenter.present(shared).rows.map(\.id), ["included", "other"])
+        XCTAssertEqual(UsagePresenter.present(shared).rows.map(\.id), ["included"])
 
         var legacy = shared
         legacy.offeredUnifiedMigration = true
         XCTAssertFalse(UsagePresenter.sharesPool(legacy))
-        XCTAssertEqual(UsagePresenter.present(legacy).rows.map(\.id), ["grok", "cursor", "other"])
+        XCTAssertEqual(UsagePresenter.present(legacy).rows.map(\.id), ["grok", "cursor"])
     }
 
     func testUnlimitedPlanDoesNotDrawAZeroBar() {
@@ -152,6 +153,10 @@ final class UsagePresenterTests: XCTestCase {
         XCTAssertEqual(UsageFormatting.percent(0), "0%")
         XCTAssertEqual(UsageFormatting.percent(100), "100%")
         XCTAssertEqual(UsageFormatting.menuPercent(12.7), "13%")
+        XCTAssertEqual(UsageFormatting.statusItem(cpu: 42.2, memory: 67.6), "CPU 42% · Mem 68%")
+        XCTAssertEqual(UsageFormatting.statusItem(cpu: 42, memory: nil), "CPU 42%")
+        XCTAssertEqual(UsageFormatting.statusItem(cpu: nil, memory: 68), "Mem 68%")
+        XCTAssertNil(UsageFormatting.statusItem(cpu: nil, memory: nil))
     }
 
     func testPlanName() {
@@ -183,7 +188,7 @@ final class UsageDecodingTests: XCTestCase {
         XCTAssertFalse(facts.includedPeriodWeekly)
         XCTAssertTrue(facts.offeredUnifiedMigration)
         XCTAssertFalse(String(describing: facts).contains("SHOULD_NOT_APPEAR"))
-        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor", "other"])
+        XCTAssertEqual(presentation.rows.map(\.id), ["grok", "cursor"])
         XCTAssertEqual(presentation.rows[0].percentText, "12.7%")
         XCTAssertEqual(calendarYear(facts.billingCycleEnd), 2026)
     }
@@ -226,7 +231,7 @@ final class UsageDecodingTests: XCTestCase {
         """.data(using: .utf8)!
         let facts = try UsageDecoding.facts(summaryData: summary, sandData: sand, sandFailed: false)
         XCTAssertEqual(facts.grok, .noAllowance)
-        XCTAssertEqual(UsagePresenter.present(facts).rows.map(\.id), ["cursor", "other"])
+        XCTAssertEqual(UsagePresenter.present(facts).rows.map(\.id), ["cursor"])
     }
 
     func testMillisecondResetParses() {
