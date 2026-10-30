@@ -88,3 +88,7 @@ These are the dashboard calls the Cursor site already makes. They are undocument
 - `POST https://cursor.com/api/dashboard/get-sand-usage-status` for Grok Bot's own allowance. The row is omitted when the account has no included Bot allowance.
 
 Redirects are not followed, so the session cookie is not sent on to another host.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
