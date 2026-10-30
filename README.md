@@ -4,6 +4,17 @@ A macOS menu bar app for CPU, memory, Grok Bot, and Cursor model usage. It has n
 
 Requires macOS 13 or later. The status item is a SwiftUI `MenuBarExtra` with the `.window` style, and the app is an agent (`LSUIElement`).
 
+
+## Screenshots
+
+![Usage panel](docs/screenshots/panel.png)
+
+CPU, memory, network, battery, and AI usage in the menu bar panel.
+
+![Status item](docs/screenshots/status-item.png)
+
+Menu bar status item (CPU and memory).
+
 ## Build and run
 
 Open `MenuBarUsage.xcodeproj` and run the MenuBarUsage scheme, or from the repo root:
