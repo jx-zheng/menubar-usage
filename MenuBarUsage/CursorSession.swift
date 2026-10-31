@@ -26,16 +26,6 @@ enum AuthFailure: Error, Equatable {
         }
     }
 
-    /// Heading for the sign-in block. A sealed session is already signed in.
-    var panelTitle: String {
-        switch self {
-        case .encrypted, .keychain:
-            return "Unlock Cursor session"
-        case .missing, .expired, .unreadable, .rejected:
-            return "Sign in to Cursor"
-        }
-    }
-
     var dumpLabel: String {
         switch self {
         case .missing: return "missing"
@@ -278,7 +268,7 @@ enum CursorDatabase {
             fileManager: fileManager,
             home: home,
             secrets: liveSecrets,
-            cache: !isRunningTests
+            cache: true
         )
     }
 
@@ -338,14 +328,8 @@ enum CursorDatabase {
         return .missing
     }
 
-    private static var isRunningTests: Bool {
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-    }
-
-    /// Unit tests must not raise a Keychain dialog. Production reads Cursor's item.
     private static func liveSecrets(service: String, account: String) -> SafeStorageSecret {
-        if isRunningTests { return .missing }
-        return CursorSafeStorageKeychain.secret(service: service, account: account)
+        CursorSafeStorageKeychain.secret(service: service, account: account)
     }
 
     static func readToken(
@@ -378,14 +362,13 @@ enum CursorDatabase {
                 return step == SQLITE_DONE ? .missing : .unreadable
             }
             guard let raw = sqlite3_column_text(statement, 0) else { return .missing }
-            return tokenOutcome(String(cString: raw), database: url, secrets: secrets, cache: cache)
+            return tokenOutcome(String(cString: raw), secrets: secrets, cache: cache)
         }
         return outcome
     }
 
     private static func tokenOutcome(
         _ raw: String,
-        database: URL,
         secrets: (String, String) -> SafeStorageSecret,
         cache: Bool
     ) -> Outcome {
@@ -395,7 +378,7 @@ enum CursorDatabase {
         }
         guard !value.isEmpty else { return .missing }
         if value.hasPrefix("cursor-safe-storage:") {
-            switch CursorSafeStorage.unseal(value, database: database, secrets: secrets, cache: cache) {
+            switch CursorSafeStorage.unseal(value, secrets: secrets, cache: cache) {
             case let .opened(plain):
                 value = plain
             case .needsConsent:

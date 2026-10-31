@@ -18,7 +18,6 @@ struct PanelContent: Equatable {
     var note: String?
     var rows: [UsageRow] = []
     var authMessage: String?
-    var authTitle: String?
     var statusMessage: String?
     var updatedAt: Date?
     var isRefreshing = false
@@ -50,7 +49,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var batteryHistory: [Double] = []
     @Published private(set) var presentation = UsagePresentation(planName: nil, note: nil, rows: [])
     @Published private(set) var authMessage: String?
-    @Published private(set) var authTitle: String?
     @Published private(set) var statusMessage: String?
     @Published private(set) var updatedAt: Date?
     @Published private(set) var isRefreshing = false
@@ -81,6 +79,8 @@ final class AppModel: ObservableObject {
     /// Bumped when the panel or Open Cursor asks for a usage fetch immediately.
     /// An in-flight fetch must not push that deadline back out.
     private var usageRequest = 0
+    /// Last unlock failure. Panel open retries only a sealed session, not a rejected paste.
+    private var lastAuthFailure: AuthFailure?
     private var nextUsageFetchAt = Date()
     private var cachedCredential: SessionCredential?
     private var cachedPlan: PlanInfoDTO?
@@ -126,7 +126,6 @@ final class AppModel: ObservableObject {
             note: presentation.note,
             rows: presentation.rows,
             authMessage: authMessage,
-            authTitle: authTitle,
             statusMessage: statusMessage,
             updatedAt: updatedAt,
             isRefreshing: isRefreshing,
@@ -215,11 +214,10 @@ final class AppModel: ObservableObject {
         panelVisible = true
         mirrorMachineMetrics()
         guard !wasOpen else { return }
-        // Opening the panel is the moment macOS may ask for Cursor Safe Storage.
-        // A sealed session with a recent successful fetch still needs that pass,
-        // because `updatedAt` is the last success, not the last locked read.
+        // A sealed session can keep an older `updatedAt` from the last success.
+        // Other auth failures, including a rejected pasted token, wait for the cadence.
         CursorSafeStorageKeychain.allowPrompt()
-        if started, UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) || authMessage != nil {
+        if started, UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) || sealedSessionNeedsRefresh {
             requestUsageRefreshNow()
             return
         }
@@ -251,12 +249,13 @@ final class AppModel: ObservableObject {
         }
 
         let credential: SessionCredential
-        switch credentialForRefresh() {
+        switch await credentialForRefresh() {
         case let .success(value):
             credential = value
+            lastAuthFailure = nil
         case let .failure(failure):
+            lastAuthFailure = failure
             authMessage = failure.message
-            authTitle = failure.panelTitle
             sessionLabel = nil
             presentation = UsagePresentation(planName: nil, note: nil, rows: [])
             refreshStatusItem()
@@ -290,7 +289,6 @@ final class AppModel: ObservableObject {
             )
             presentation = UsagePresenter.present(facts)
             authMessage = nil
-            authTitle = nil
             sessionLabel = credential.source.label
             updatedAt = Date()
             transportFailures = 0
@@ -324,15 +322,15 @@ final class AppModel: ObservableObject {
             planFetchedAt = nil
             planOwner = nil
             KeychainTokenStore.invalidateCache()
-            if credential.source == .keychain, case .success = SessionResolver.databaseCredential() {
+            if credential.source == .keychain, case .success = await unlockedDatabaseCredential() {
                 suppressKeychain = true
                 pendingStatus = "The pasted token was rejected. Showing the Cursor session."
                 isRefreshing = false
                 await refreshUsage()
                 return
             }
+            lastAuthFailure = .rejected
             authMessage = AuthFailure.rejected.message
-            authTitle = AuthFailure.rejected.panelTitle
             sessionLabel = nil
             presentation = UsagePresentation(planName: presentation.planName, note: nil, rows: [])
             statusMessage = nil
@@ -385,27 +383,18 @@ final class AppModel: ObservableObject {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.todesktop.230313mzl4w4u92") {
-            wakeSealedSession()
             NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+            requestUsageRefreshNow()
             return
         }
         let fallback = URL(fileURLWithPath: "/Applications/Cursor.app")
         if FileManager.default.fileExists(atPath: fallback.path) {
-            wakeSealedSession()
             NSWorkspace.shared.openApplication(at: fallback, configuration: configuration)
+            requestUsageRefreshNow()
             return
         }
         openDashboard()
         statusMessage = "Cursor is not installed. Opened the usage dashboard."
-    }
-
-    /// Opening Cursor leaves a sealed token sealed. Ask for Safe Storage before
-    /// Cursor becomes active, then read usage with the key that prompt unlocked.
-    private func wakeSealedSession() {
-        CursorSafeStorageKeychain.allowPrompt()
-        CursorSafeStorageKeychain.interactive = true
-        _ = SessionResolver.resolve()
-        requestUsageRefreshNow()
     }
 
     private func requestUsageRefreshNow() {
@@ -430,9 +419,7 @@ final class AppModel: ObservableObject {
         UsageSchedule.usageInterval(panelOpen: panelVisible, transportFailures: transportFailures)
     }
 
-    private func credentialForRefresh() -> Result<SessionCredential, AuthFailure> {
-        // Background polls stay quiet. The dialog is for an open panel or Refresh.
-        CursorSafeStorageKeychain.interactive = panelVisible
+    private func credentialForRefresh() async -> Result<SessionCredential, AuthFailure> {
         if let cachedCredential,
            cachedCredential.source == .keychain,
            !SessionCredentialFreshness.isNearExpiry(cachedCredential.cookie) {
@@ -442,17 +429,42 @@ final class AppModel: ObservableObject {
         if cachedCredential?.source == .keychain {
             KeychainTokenStore.invalidateCache()
         }
-        let result = SessionResolver.resolve(allowKeychain: !suppressKeychain)
+        if !suppressKeychain, let pasted = SessionResolver.keychainCredential() {
+            notePlanOwner(pasted.cookie)
+            cachedCredential = pasted
+            notePastedToken()
+            return .success(pasted)
+        }
+        let result = await unlockedDatabaseCredential()
         switch result {
         case let .success(value):
             notePlanOwner(value.cookie)
             // Only a pasted token is reused. Cursor's database is read every refresh.
-            cachedCredential = value.source == .keychain ? value : nil
+            cachedCredential = nil
             notePastedToken()
         case .failure:
             cachedCredential = nil
         }
         return result
+    }
+
+    /// Cursor's Safe Storage prompt blocks until the user answers. Run it off the main actor
+    /// so the panel, status item, and sampler keep updating.
+    private func unlockedDatabaseCredential() async -> Result<SessionCredential, AuthFailure> {
+        let interactive = panelVisible
+        return await Task.detached {
+            CursorSafeStorageKeychain.setInteractive(interactive)
+            return SessionResolver.databaseCredential()
+        }.value
+    }
+
+    private var sealedSessionNeedsRefresh: Bool {
+        switch lastAuthFailure {
+        case .keychain, .encrypted:
+            return true
+        case .missing, .expired, .unreadable, .rejected, nil:
+            return false
+        }
     }
 
     /// The account changed while this request was in flight. Fetch again instead of waiting out the cadence.

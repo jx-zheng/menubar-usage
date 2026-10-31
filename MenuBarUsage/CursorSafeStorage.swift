@@ -26,56 +26,25 @@ enum CursorSafeStorage {
     private static var cachedKey: Data?
 
     static func resetForTests() {
-        cachedKey = nil
+        SafeStorageGate.withLock { cachedKey = nil }
         CursorSafeStorageKeychain.resetForTests()
     }
 
-    /// Keychain identities for the Cursor install that owns `state.vscdb`.
-    /// Current Electron uses the account `"<App> Key"`. Older builds used the
-    /// app name alone. Insiders and Nightly keep their own item and fall
-    /// back to the stable name when that item is the one Cursor actually wrote.
-    static func identities(forDatabase url: URL) -> [SafeStorageIdentity] {
-        let path = url.path
-        let names: [String]
-        if path.contains("/Cursor Nightly/") {
-            names = ["Cursor Nightly", "Cursor"]
-        } else if path.contains("/Cursor - Insiders/") {
-            names = ["Cursor - Insiders", "Cursor Insiders", "Cursor"]
-        } else {
-            names = ["Cursor"]
-        }
-        var seen = Set<String>()
-        var identities: [SafeStorageIdentity] = []
-        for name in names {
-            for account in ["\(name) Key", name] {
-                let identity = SafeStorageIdentity(service: "\(name) Safe Storage", account: account)
-                let key = "\(identity.service)\n\(identity.account)"
-                if seen.insert(key).inserted {
-                    identities.append(identity)
-                }
-            }
-        }
-        return identities
-    }
-
-    static func decrypt(sealed: String, password: Data) -> String? {
-        guard sealed.hasPrefix(sealedPrefix) else { return nil }
-        let encoded = String(sealed.dropFirst(sealedPrefix.count))
-        guard let blob = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters) else { return nil }
-        guard let key = deriveKey(password: password) else { return nil }
-        return decrypt(blob: blob, key: key)
-    }
+    /// Stable Cursor only. Current Electron uses account `Cursor Key`; older builds used `Cursor`.
+    static let identities = [
+        SafeStorageIdentity(service: "Cursor Safe Storage", account: "Cursor Key"),
+        SafeStorageIdentity(service: "Cursor Safe Storage", account: "Cursor")
+    ]
 
     /// Opens a sealed cell. `cache` keeps the derived AES key in memory so a
     /// later refresh does not raise another Keychain dialog. The JWT itself
     /// is not cached. A test passes `cache: false` and its own `secrets`.
     static func unseal(
         _ stored: String,
-        database: URL,
         secrets: (String, String) -> SafeStorageSecret,
         cache: Bool
     ) -> SafeStorageUnseal {
-        let result = unsealNow(stored, database: database, secrets: secrets, cache: cache)
+        let result = unsealNow(stored, secrets: secrets, cache: cache)
         if cache, case .opened = result {
             return result
         }
@@ -87,7 +56,6 @@ enum CursorSafeStorage {
 
     private static func unsealNow(
         _ stored: String,
-        database: URL,
         secrets: (String, String) -> SafeStorageSecret,
         cache: Bool
     ) -> SafeStorageUnseal {
@@ -97,20 +65,20 @@ enum CursorSafeStorage {
             return .failed
         }
 
-        if cache, let cachedKey, let plain = jwt(blob, key: cachedKey) {
+        if cache, let key = SafeStorageGate.withLock({ cachedKey }), let plain = jwt(blob, key: key) {
             return .opened(plain)
         }
         if cache {
-            cachedKey = nil
+            SafeStorageGate.withLock { cachedKey = nil }
         }
 
         var needsConsent = false
-        for identity in identities(forDatabase: database) {
+        for identity in identities {
             switch secrets(identity.service, identity.account) {
             case let .secret(password):
                 guard let key = deriveKey(password: password), let plain = jwt(blob, key: key) else { continue }
                 if cache {
-                    cachedKey = key
+                    SafeStorageGate.withLock { cachedKey = key }
                 }
                 return .opened(plain)
             case .missing:
@@ -205,40 +173,62 @@ enum SafeStorageUnseal: Equatable {
     case failed
 }
 
+/// Serializes prompt flags and the cached AES key. The lock is never held across
+/// `SecItemCopyMatching`: the interactive call blocks until the user answers.
+enum SafeStorageGate {
+    private static let lock = NSLock()
+
+    static func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
 /// Reads Cursor's existing Safe Storage password. Never creates a keychain item.
 ///
-/// The first lookup skips the authentication dialog so a missing account name
-/// and a background refresh stay quiet. The dialog is the second lookup, and
-/// only while the panel is open or the user clicked Refresh or Open Cursor.
-/// One pass prompts at most once. A denial or a prompt that still does not
-/// open the blob stays quiet until the next explicit request.
+/// A quiet read disables user interaction for that call. `Cursor Safe Storage`
+/// is a legacy login-Keychain item, and `kSecUseAuthenticationUISkip` reports
+/// that ACL as "not found" or still raises SecurityAgent. Interaction-blocked
+/// statuses stay `.needsConsent`, so a later interactive read can ask.
+/// The dialog runs only when `interactive && !suppressPrompt`, and not while
+/// this lock is held.
 enum CursorSafeStorageKeychain {
-    static var interactive = false
-
+    private static var interactive = false
     private static var suppressPrompt = false
     private static var promptedThisPass = false
     private static var didPromptThisPass = false
 
+    static func setInteractive(_ value: Bool) {
+        SafeStorageGate.withLock { interactive = value }
+    }
+
     static func allowPrompt() {
-        suppressPrompt = false
+        SafeStorageGate.withLock { suppressPrompt = false }
     }
 
     static func beginPass() {
-        promptedThisPass = false
-        didPromptThisPass = false
+        SafeStorageGate.withLock {
+            promptedThisPass = false
+            didPromptThisPass = false
+        }
     }
 
     static func notePromptDidNotUnlock() {
-        if didPromptThisPass {
-            suppressPrompt = true
+        SafeStorageGate.withLock {
+            if didPromptThisPass {
+                suppressPrompt = true
+            }
         }
     }
 
     static func resetForTests() {
-        interactive = false
-        suppressPrompt = false
-        promptedThisPass = false
-        didPromptThisPass = false
+        SafeStorageGate.withLock {
+            interactive = false
+            suppressPrompt = false
+            promptedThisPass = false
+            didPromptThisPass = false
+        }
     }
 
     static func secret(service: String, account: String) -> SafeStorageSecret {
@@ -248,25 +238,38 @@ enum CursorSafeStorageKeychain {
         case .missing:
             return .missing
         case .needsConsent:
-            let mayPrompt = interactive && !suppressPrompt && !promptedThisPass
+            let mayPrompt = SafeStorageGate.withLock { () -> Bool in
+                let allowed = interactive && !suppressPrompt && !promptedThisPass
+                if allowed {
+                    promptedThisPass = true
+                    didPromptThisPass = true
+                }
+                return allowed
+            }
             guard mayPrompt else { return .needsConsent }
-            promptedThisPass = true
-            didPromptThisPass = true
             return read(service: service, account: account, prompt: true)
         }
     }
 
     private static func read(service: String, account: String, prompt: Bool) -> SafeStorageSecret {
-        var query: [String: Any] = [
+        if prompt {
+            return copyMatching(service: service, account: account)
+        }
+        var allowed = DarwinBoolean(true)
+        SecKeychainGetUserInteractionAllowed(&allowed)
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(allowed.boolValue) }
+        return copyMatching(service: service, account: account)
+    }
+
+    private static func copyMatching(service: String, account: String) -> SafeStorageSecret {
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        if !prompt {
-            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
-        }
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         switch status {

@@ -316,7 +316,7 @@ struct UsagePanelView: View {
 
     private func signIn(message: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(content.authTitle ?? "Sign in to Cursor")
+            Text("Sign in to Cursor")
                 .font(.callout.weight(.medium))
             Text(message)
                 .font(.caption)

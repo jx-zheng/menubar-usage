@@ -77,9 +77,9 @@ No token is committed, logged, or copied into the repo.
 1. A session token you paste is stored in the login Keychain under `com.jxzheng.menubar-usage.session` and is used first. Forget removes it. After a successful read it stays in memory, and it is read from the Keychain again at launch, on save or forget, when Cursor rejects it, and when the token is close to expiring.
 2. Otherwise the app reads `cursorAuth/accessToken` from Cursor's local `state.vscdb` on each refresh and builds a `WorkosCursorSessionToken` cookie from the JWT `sub` and the token. That token is not written to this app's Keychain. The database is read again on the next refresh.
 
-Current Cursor builds seal that row when `cursor.storage.authTokenEncryptionAtRest` is on. The cell is `cursor-safe-storage:v1:` plus the base64 of an Electron `safeStorage` ciphertext (`v10` or `v11`, AES-128-CBC). The password is the login Keychain item Cursor already created: service `Cursor Safe Storage`, account `Cursor Key` (older Electron builds used the account `Cursor`). The app derives the AES key from those bytes and decrypts the row. macOS asks the first time the panel is open. Choose Allow, or Always Allow so later launches stay quiet. A denial stays quiet until Refresh, Open Cursor, or the next time the panel opens. Background polling does not raise the dialog. The derived key stays in memory for this launch. The JWT is read from the database on each refresh.
+Current Cursor builds seal that row when `cursor.storage.authTokenEncryptionAtRest` is on. The cell is `cursor-safe-storage:v1:` plus the base64 of an Electron `safeStorage` ciphertext (`v10` or `v11`, AES-128-CBC). The password is the login Keychain item Cursor already created: service `Cursor Safe Storage`, account `Cursor Key` (older Electron builds used the account `Cursor`). The app derives the AES key from those bytes and decrypts the row. macOS asks the first time the panel is open. Choose Allow, or Always Allow so later launches stay quiet. A denial stays quiet until Refresh or the next time the panel opens. Background polling does not raise the dialog. The derived key stays in memory for this launch. The JWT is read from the database on each refresh.
 
-A plaintext JWT from an older Cursor install is still accepted and does not read that Keychain item. Insiders and Nightly databases try their own Safe Storage item, then the stable one.
+A plaintext JWT from an older Cursor install is still accepted and does not read that Keychain item. The same `Cursor Safe Storage` item is used for every database above.
 
 Databases, first match that has a usable token:
 
@@ -89,7 +89,7 @@ Databases, first match that has a usable token:
 
 The database is opened read-only. The only row read is `cursorAuth/accessToken`.
 
-If Cursor is signed out, the session is expired, the Keychain prompt is denied, or the sealed blob does not open, the panel says so and leaves the percentages blank. Nothing is filled in as a guess. Paste a session token if the Keychain item is missing. This build does not read the browser cookie database. Opening Cursor does not rewrite a sealed token as plaintext; it unlocks when the Keychain password opens the row that is already there. The usage dashboard remains available at [cursor.com/dashboard/usage](https://cursor.com/dashboard/usage).
+If Cursor is signed out, the session is expired, the Keychain prompt is denied, or the sealed blob does not open, the panel says so and leaves the percentages blank. Nothing is filled in as a guess. Paste a session token if the Keychain item is missing. This build does not read the browser cookie database. Opening Cursor schedules the same usage refresh as the panel. It does not rewrite a sealed token as plaintext. The usage dashboard remains available at [cursor.com/dashboard/usage](https://cursor.com/dashboard/usage).
 
 The app is not sandboxed, because a sandboxed app cannot read Cursor's Application Support database.
 
