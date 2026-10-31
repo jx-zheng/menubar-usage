@@ -46,7 +46,7 @@ private struct UsagePanelHost: View {
 
     private var actions: PanelActions {
         PanelActions(
-            refresh: { Task { await model.refreshUsage() } },
+            refresh: { Task { await model.refreshFromUser() } },
             quit: { model.quit() },
             openCursor: { model.openCursor() },
             openDashboard: { model.openDashboard() },
