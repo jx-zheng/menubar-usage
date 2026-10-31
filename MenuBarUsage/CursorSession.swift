@@ -5,6 +5,7 @@ enum AuthFailure: Error, Equatable {
     case missing
     case expired
     case encrypted
+    case keychain
     case unreadable
     case rejected
 
@@ -15,11 +16,23 @@ enum AuthFailure: Error, Equatable {
         case .expired:
             return "The Cursor session on this Mac has expired. Open Cursor and sign in again."
         case .encrypted:
-            return "Cursor saved an encrypted session this app does not unlock. Open Cursor, or paste a session token."
+            return "Cursor saved an encrypted session and the Keychain key did not open it. Open Cursor and sign in again, or paste a session token."
+        case .keychain:
+            return "Cursor locked this session in the login Keychain. Click Refresh and allow access to Cursor Safe Storage, or paste a session token."
         case .unreadable:
             return "Cursor's session database could not be read."
         case .rejected:
             return "Cursor rejected this session. Open Cursor and sign in again, or paste a new token."
+        }
+    }
+
+    /// Heading for the sign-in block. A sealed session is already signed in.
+    var panelTitle: String {
+        switch self {
+        case .encrypted, .keychain:
+            return "Unlock Cursor session"
+        case .missing, .expired, .unreadable, .rejected:
+            return "Sign in to Cursor"
         }
     }
 
@@ -28,6 +41,7 @@ enum AuthFailure: Error, Equatable {
         case .missing: return "missing"
         case .expired: return "expired"
         case .encrypted: return "encrypted"
+        case .keychain: return "safe-storage"
         case .unreadable: return "unreadable"
         case .rejected: return "rejected"
         }
@@ -252,11 +266,37 @@ enum CursorDatabase {
         case token(String)
         case expired
         case encrypted
+        /// The cell is sealed and macOS has not handed over the Safe Storage password.
+        case keychain
         case missing
         case unreadable
     }
 
     static func load(fileManager: FileManager = .default, home: URL? = nil) -> Outcome {
+        CursorSafeStorageKeychain.beginPass()
+        return readDatabases(
+            fileManager: fileManager,
+            home: home,
+            secrets: liveSecrets,
+            cache: !isRunningTests
+        )
+    }
+
+    /// `secrets` is called only for a sealed cell, and only before this returns.
+    static func load(
+        fileManager: FileManager = .default,
+        home: URL? = nil,
+        secrets: (String, String) -> SafeStorageSecret
+    ) -> Outcome {
+        readDatabases(fileManager: fileManager, home: home, secrets: secrets, cache: false)
+    }
+
+    private static func readDatabases(
+        fileManager: FileManager,
+        home: URL?,
+        secrets: (String, String) -> SafeStorageSecret,
+        cache: Bool
+    ) -> Outcome {
         let base = home ?? fileManager.homeDirectoryForCurrentUser
         let names = ["Cursor", "Cursor - Insiders", "Cursor Nightly"]
         let candidates = names.map {
@@ -264,12 +304,13 @@ enum CursorDatabase {
         }
         var sawExpired = false
         var sawEncrypted = false
+        var sawKeychain = false
         var sawUnreadable = false
         var sawFile = false
         for url in candidates {
             guard fileManager.fileExists(atPath: url.path) else { continue }
             sawFile = true
-            switch readToken(at: url) {
+            switch readToken(at: url, secrets: secrets, cache: cache) {
             case let .token(value):
                 if SessionCookie.value(fromJWT: value) != nil {
                     return .token(value)
@@ -279,12 +320,17 @@ enum CursorDatabase {
                 sawExpired = true
             case .encrypted:
                 sawEncrypted = true
+            case .keychain:
+                sawKeychain = true
             case .missing:
                 continue
             case .unreadable:
                 sawUnreadable = true
             }
         }
+        // A sealed session that still needs the Keychain is a live login.
+        // Prefer that over an expired plaintext token in another install.
+        if sawKeychain { return .keychain }
         if sawExpired { return .expired }
         if sawEncrypted { return .encrypted }
         if sawUnreadable { return .unreadable }
@@ -292,7 +338,21 @@ enum CursorDatabase {
         return .missing
     }
 
-    static func readToken(at url: URL) -> Outcome {
+    private static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    /// Unit tests must not raise a Keychain dialog. Production reads Cursor's item.
+    private static func liveSecrets(service: String, account: String) -> SafeStorageSecret {
+        if isRunningTests { return .missing }
+        return CursorSafeStorageKeychain.secret(service: service, account: account)
+    }
+
+    static func readToken(
+        at url: URL,
+        secrets: (String, String) -> SafeStorageSecret,
+        cache: Bool
+    ) -> Outcome {
         var database: OpaquePointer?
         guard let uri = uri(for: url) else { return .unreadable }
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
@@ -318,18 +378,32 @@ enum CursorDatabase {
                 return step == SQLITE_DONE ? .missing : .unreadable
             }
             guard let raw = sqlite3_column_text(statement, 0) else { return .missing }
-            return tokenOutcome(String(cString: raw))
+            return tokenOutcome(String(cString: raw), database: url, secrets: secrets, cache: cache)
         }
         return outcome
     }
 
-    private static func tokenOutcome(_ raw: String) -> Outcome {
+    private static func tokenOutcome(
+        _ raw: String,
+        database: URL,
+        secrets: (String, String) -> SafeStorageSecret,
+        cache: Bool
+    ) -> Outcome {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
             value = String(value.dropFirst().dropLast())
         }
         guard !value.isEmpty else { return .missing }
-        if value.hasPrefix("cursor-safe-storage:") { return .encrypted }
+        if value.hasPrefix("cursor-safe-storage:") {
+            switch CursorSafeStorage.unseal(value, database: database, secrets: secrets, cache: cache) {
+            case let .opened(plain):
+                value = plain
+            case .needsConsent:
+                return .keychain
+            case .failed:
+                return .encrypted
+            }
+        }
         if JWTClaims.decode(value) == nil { return .unreadable }
         if JWTClaims.decode(value)?.isExpired == true { return .expired }
         return .token(value)
@@ -352,8 +426,17 @@ enum SessionResolver {
         return SessionCredential(cookie: cookie, source: .keychain)
     }
 
-    static func databaseCredential(home: URL? = nil) -> Result<SessionCredential, AuthFailure> {
-        switch CursorDatabase.load(home: home) {
+    static func databaseCredential(
+        home: URL? = nil,
+        secrets: ((String, String) -> SafeStorageSecret)? = nil
+    ) -> Result<SessionCredential, AuthFailure> {
+        let outcome: CursorDatabase.Outcome
+        if let secrets {
+            outcome = CursorDatabase.load(home: home, secrets: secrets)
+        } else {
+            outcome = CursorDatabase.load(home: home)
+        }
+        switch outcome {
         case let .token(jwt):
             guard let cookie = SessionCookie.value(fromJWT: jwt) else { return .failure(.expired) }
             return .success(SessionCredential(cookie: cookie, source: .cursorDatabase))
@@ -361,6 +444,8 @@ enum SessionResolver {
             return .failure(.expired)
         case .encrypted:
             return .failure(.encrypted)
+        case .keychain:
+            return .failure(.keychain)
         case .unreadable:
             return .failure(.unreadable)
         case .missing:
@@ -368,10 +453,14 @@ enum SessionResolver {
         }
     }
 
-    static func resolve(allowKeychain: Bool = true, home: URL? = nil) -> Result<SessionCredential, AuthFailure> {
+    static func resolve(
+        allowKeychain: Bool = true,
+        home: URL? = nil,
+        secrets: ((String, String) -> SafeStorageSecret)? = nil
+    ) -> Result<SessionCredential, AuthFailure> {
         if allowKeychain, let pasted = keychainCredential() {
             return .success(pasted)
         }
-        return databaseCredential(home: home)
+        return databaseCredential(home: home, secrets: secrets)
     }
 }

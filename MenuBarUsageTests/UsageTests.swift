@@ -416,6 +416,19 @@ final class UsageDecodingTests: XCTestCase {
 }
 
 final class SessionCookieTests: XCTestCase {
+    private static let vectorPassword = "test-safe-storage-password"
+    private static let vectorJWT = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJnb29nbGUtb2F1dGgyfHVzZXJfVEVTVCIsImV4cCI6MjAwMDAwMDAwMH0.sig"
+    /// Independent of the Swift cipher. PBKDF2-HMAC-SHA1, salt `saltysalt`, 1003 rounds, AES-128-CBC, IV of 16 spaces.
+    private static let sealedVector = "cursor-safe-storage:v1:djEwL3LaZvfgKgpnty8B/D+O86L9yG5CDQY0t/z7Jb1vppVNAU0tVvxo8XZBH+8FONF1AZH4ZYkvG+EJVg46dpMW2vOTSP2zi24C2Z8cRxvoAj5dpidXZjfV50kC4TUDMsLK9OWG/JOpOyDzpI2wzCpRlQ=="
+    /// Same JWT, password bytes 00 ff 10 7f, so the Keychain secret must stay raw Data.
+    private static let rawPassword = Data([0x00, 0xff, 0x10, 0x7f])
+    private static let rawSealedVector = "cursor-safe-storage:v1:djEwXHWB5j+luQXvcJsmEfwRN4iB/ncCzNevQ1ipVV89NK+Jitu+SM8o7gR2LBtw4a0epo0P29Gwvr6Ryb7H0H06GPtW9OSfRE14SosTDK5uUQNr7ILXZFY8H8J5Y6M5X1ZO7Mm0CYCBsoI4uY5SILl36g=="
+
+    override func setUp() {
+        super.setUp()
+        CursorSafeStorage.resetForTests()
+    }
+
     func testBuildsCookieFromJWTSubject() {
         let jwt = Self.jwt(subject: "google-oauth2|user_TEST", expiresAt: Date().addingTimeInterval(3_600))
         let cookie = SessionCookie.value(fromJWT: jwt)
@@ -445,11 +458,16 @@ final class SessionCookieTests: XCTestCase {
 
         let jwt = Self.jwt(subject: "google-oauth2|user_TEST", expiresAt: Date().addingTimeInterval(3_600))
         try Self.insert(token: jwt, at: database)
-        let loaded = CursorDatabase.load(home: root)
+        var asked = false
+        let loaded = CursorDatabase.load(home: root, secrets: { _, _ in
+            asked = true
+            return .missing
+        })
         guard case let .token(value) = loaded else {
             return XCTFail("expected token, got \(loaded)")
         }
         XCTAssertEqual(value, jwt)
+        XCTAssertFalse(asked)
         let credential = try XCTUnwrap(try? SessionResolver.resolve(allowKeychain: false, home: root).get())
         XCTAssertEqual(credential.source, .cursorDatabase)
         XCTAssertTrue(credential.cookie.hasPrefix("user_TEST%3A%3A"))
@@ -462,11 +480,94 @@ final class SessionCookieTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         try Self.insert(token: "cursor-safe-storage:v1:sealed", at: database)
         XCTAssertEqual(CursorDatabase.load(home: root), .encrypted)
+        XCTAssertFalse(AuthFailure.encrypted.message.contains("does not unlock"))
+        XCTAssertFalse(AuthFailure.keychain.message.contains("does not unlock"))
+        XCTAssertTrue(AuthFailure.keychain.message.contains("Cursor Safe Storage"))
+        XCTAssertEqual(AuthFailure.keychain.panelTitle, "Unlock Cursor session")
+        XCTAssertEqual(AuthFailure.missing.panelTitle, "Sign in to Cursor")
+    }
+
+    func testDecryptsElectronSafeStorageVector() {
+        let password = Data(Self.vectorPassword.utf8)
+        XCTAssertEqual(CursorSafeStorage.decrypt(sealed: Self.sealedVector, password: password), Self.vectorJWT)
+        XCTAssertEqual(CursorSafeStorage.decrypt(sealed: Self.rawSealedVector, password: Self.rawPassword), Self.vectorJWT)
+        XCTAssertNil(CursorSafeStorage.decrypt(sealed: Self.sealedVector, password: Data("wrong-password".utf8)))
+        XCTAssertNil(CursorSafeStorage.decrypt(sealed: "cursor-safe-storage:v2:aaaa", password: password))
+    }
+
+    func testV11PrefixUsesTheSameCipher() throws {
+        let payload = String(Self.sealedVector.dropFirst(CursorSafeStorage.sealedPrefix.count))
+        let blob = try XCTUnwrap(Data(base64Encoded: payload))
+        var bytes = [UInt8](blob)
+        bytes[1] = UInt8(ascii: "1")
+        bytes[2] = UInt8(ascii: "1")
+        let sealed = CursorSafeStorage.sealedPrefix + Data(bytes).base64EncodedString()
+        XCTAssertEqual(
+            CursorSafeStorage.decrypt(sealed: sealed, password: Data(Self.vectorPassword.utf8)),
+            Self.vectorJWT
+        )
+    }
+
+    func testSealedDatabaseUnlocksWithCursorKey() throws {
+        let root = try Self.makeHome(token: Self.sealedVector)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let credential = try XCTUnwrap(try? SessionResolver.resolve(allowKeychain: false, home: root, secrets: { service, account in
+            guard service == "Cursor Safe Storage", account == "Cursor Key" else { return .missing }
+            return .secret(Data(Self.vectorPassword.utf8))
+        }).get())
+        XCTAssertEqual(credential.source, .cursorDatabase)
+        XCTAssertTrue(credential.cookie.hasPrefix("user_TEST%3A%3A"))
+        XCTAssertTrue(credential.cookie.hasSuffix(Self.vectorJWT))
+    }
+
+    func testSealedDatabaseFallsBackToOlderAccountName() throws {
+        let root = try Self.makeHome(token: Self.rawSealedVector)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var asked: [String] = []
+        let loaded = CursorDatabase.load(home: root, secrets: { service, account in
+            asked.append("\(service) \(account)")
+            guard service == "Cursor Safe Storage", account == "Cursor" else { return .missing }
+            return .secret(Self.rawPassword)
+        })
+        XCTAssertEqual(loaded, .token(Self.vectorJWT))
+        XCTAssertEqual(asked.first, "Cursor Safe Storage Cursor Key")
+        XCTAssertTrue(asked.contains("Cursor Safe Storage Cursor"))
+    }
+
+    func testSealedDatabaseWithoutConsentStaysEmpty() throws {
+        let root = try Self.makeHome(token: Self.sealedVector)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = SessionResolver.resolve(allowKeychain: false, home: root, secrets: { _, _ in .needsConsent })
+        XCTAssertEqual(result, .failure(.keychain))
+    }
+
+    func testWrongSafeStoragePasswordDoesNotInventASession() throws {
+        let root = try Self.makeHome(token: Self.sealedVector)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = SessionResolver.resolve(allowKeychain: false, home: root, secrets: { _, _ in
+            .secret(Data("wrong-password".utf8))
+        })
+        XCTAssertEqual(result, .failure(.encrypted))
+    }
+
+    func testInsidersDatabaseTriesItsOwnSafeStorageThenCursor() {
+        let url = URL(fileURLWithPath: "/Users/x/Library/Application Support/Cursor - Insiders/User/globalStorage/state.vscdb")
+        let identities = CursorSafeStorage.identities(forDatabase: url)
+        XCTAssertEqual(identities.first, SafeStorageIdentity(service: "Cursor - Insiders Safe Storage", account: "Cursor - Insiders Key"))
+        XCTAssertTrue(identities.contains(SafeStorageIdentity(service: "Cursor Safe Storage", account: "Cursor Key")))
     }
 
     func testMissingDatabase() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         XCTAssertEqual(CursorDatabase.load(home: root), .missing)
+    }
+
+    private static func makeHome(token: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let database = root.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+        try FileManager.default.createDirectory(at: database.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try insert(token: token, at: database)
+        return root
     }
 
     private static func jwt(subject: String, expiresAt: Date) -> String {

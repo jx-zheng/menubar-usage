@@ -18,6 +18,7 @@ struct PanelContent: Equatable {
     var note: String?
     var rows: [UsageRow] = []
     var authMessage: String?
+    var authTitle: String?
     var statusMessage: String?
     var updatedAt: Date?
     var isRefreshing = false
@@ -49,6 +50,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var batteryHistory: [Double] = []
     @Published private(set) var presentation = UsagePresentation(planName: nil, note: nil, rows: [])
     @Published private(set) var authMessage: String?
+    @Published private(set) var authTitle: String?
     @Published private(set) var statusMessage: String?
     @Published private(set) var updatedAt: Date?
     @Published private(set) var isRefreshing = false
@@ -76,6 +78,9 @@ final class AppModel: ObservableObject {
     private var sleepGeneration = 0
     private var transportFailures = 0
     private var lastUsageAttemptAt: Date?
+    /// Bumped when the panel or Open Cursor asks for a usage fetch immediately.
+    /// An in-flight fetch must not push that deadline back out.
+    private var usageRequest = 0
     private var nextUsageFetchAt = Date()
     private var cachedCredential: SessionCredential?
     private var cachedPlan: PlanInfoDTO?
@@ -121,6 +126,7 @@ final class AppModel: ObservableObject {
             note: presentation.note,
             rows: presentation.rows,
             authMessage: authMessage,
+            authTitle: authTitle,
             statusMessage: statusMessage,
             updatedAt: updatedAt,
             isRefreshing: isRefreshing,
@@ -181,8 +187,9 @@ final class AppModel: ObservableObject {
                         continue
                     }
                     let epoch = self.planEpoch
+                    let request = self.usageRequest
                     await self.refreshUsage()
-                    if self.planEpoch == epoch {
+                    if self.planEpoch == epoch, self.usageRequest == request {
                         self.nextUsageFetchAt = Date().addingTimeInterval(self.currentUsageInterval())
                     }
                 }
@@ -208,10 +215,13 @@ final class AppModel: ObservableObject {
         panelVisible = true
         mirrorMachineMetrics()
         guard !wasOpen else { return }
-        // One fetch: arm the usage loop instead of starting a second request here.
-        // A deadline that is already due is left in place when the loop wakes.
-        if started, UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) {
-            nextUsageFetchAt = Date()
+        // Opening the panel is the moment macOS may ask for Cursor Safe Storage.
+        // A sealed session with a recent successful fetch still needs that pass,
+        // because `updatedAt` is the last success, not the last locked read.
+        CursorSafeStorageKeychain.allowPrompt()
+        if started, UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) || authMessage != nil {
+            requestUsageRefreshNow()
+            return
         }
         interruptSleepers()
     }
@@ -220,6 +230,16 @@ final class AppModel: ObservableObject {
         guard panelVisible else { return }
         panelVisible = false
         interruptSleepers()
+    }
+
+    /// The Refresh button. Clears a previous Keychain denial so macOS can ask again.
+    func refreshFromUser() async {
+        CursorSafeStorageKeychain.allowPrompt()
+        if isRefreshing {
+            requestUsageRefreshNow()
+            return
+        }
+        await refreshUsage()
     }
 
     func refreshUsage() async {
@@ -236,6 +256,7 @@ final class AppModel: ObservableObject {
             credential = value
         case let .failure(failure):
             authMessage = failure.message
+            authTitle = failure.panelTitle
             sessionLabel = nil
             presentation = UsagePresentation(planName: nil, note: nil, rows: [])
             refreshStatusItem()
@@ -269,6 +290,7 @@ final class AppModel: ObservableObject {
             )
             presentation = UsagePresenter.present(facts)
             authMessage = nil
+            authTitle = nil
             sessionLabel = credential.source.label
             updatedAt = Date()
             transportFailures = 0
@@ -310,6 +332,7 @@ final class AppModel: ObservableObject {
                 return
             }
             authMessage = AuthFailure.rejected.message
+            authTitle = AuthFailure.rejected.panelTitle
             sessionLabel = nil
             presentation = UsagePresentation(planName: presentation.planName, note: nil, rows: [])
             statusMessage = nil
@@ -362,16 +385,33 @@ final class AppModel: ObservableObject {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.todesktop.230313mzl4w4u92") {
+            wakeSealedSession()
             NSWorkspace.shared.openApplication(at: url, configuration: configuration)
             return
         }
         let fallback = URL(fileURLWithPath: "/Applications/Cursor.app")
         if FileManager.default.fileExists(atPath: fallback.path) {
+            wakeSealedSession()
             NSWorkspace.shared.openApplication(at: fallback, configuration: configuration)
             return
         }
         openDashboard()
         statusMessage = "Cursor is not installed. Opened the usage dashboard."
+    }
+
+    /// Opening Cursor leaves a sealed token sealed. Ask for Safe Storage before
+    /// Cursor becomes active, then read usage with the key that prompt unlocked.
+    private func wakeSealedSession() {
+        CursorSafeStorageKeychain.allowPrompt()
+        CursorSafeStorageKeychain.interactive = true
+        _ = SessionResolver.resolve()
+        requestUsageRefreshNow()
+    }
+
+    private func requestUsageRefreshNow() {
+        usageRequest &+= 1
+        nextUsageFetchAt = Date()
+        interruptSleepers()
     }
 
     func openDashboard() {
@@ -391,6 +431,8 @@ final class AppModel: ObservableObject {
     }
 
     private func credentialForRefresh() -> Result<SessionCredential, AuthFailure> {
+        // Background polls stay quiet. The dialog is for an open panel or Refresh.
+        CursorSafeStorageKeychain.interactive = panelVisible
         if let cachedCredential,
            cachedCredential.source == .keychain,
            !SessionCredentialFreshness.isNearExpiry(cachedCredential.cookie) {
