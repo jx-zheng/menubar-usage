@@ -97,7 +97,7 @@ enum CursorSafeStorage {
                     guard let secretBase = secret.baseAddress,
                           let saltBase = saltBytes.baseAddress,
                           let outBase = out.baseAddress else {
-                        return kCCParamError
+                        return CCCryptorStatus(kCCParamError)
                     }
                     return CCKeyDerivationPBKDF(
                         CCPBKDFAlgorithm(kCCPBKDF2),
