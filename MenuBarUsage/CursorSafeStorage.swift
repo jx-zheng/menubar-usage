@@ -25,11 +25,6 @@ enum CursorSafeStorage {
 
     private static var cachedKey: Data?
 
-    static func resetForTests() {
-        SafeStorageGate.withLock { cachedKey = nil }
-        CursorSafeStorageKeychain.resetForTests()
-    }
-
     /// Stable Cursor only. Current Electron uses account `Cursor Key`; older builds used `Cursor`.
     static let identities = [
         SafeStorageIdentity(service: "Cursor Safe Storage", account: "Cursor Key"),
@@ -219,15 +214,6 @@ enum CursorSafeStorageKeychain {
             if didPromptThisPass {
                 suppressPrompt = true
             }
-        }
-    }
-
-    static func resetForTests() {
-        SafeStorageGate.withLock {
-            interactive = false
-            suppressPrompt = false
-            promptedThisPass = false
-            didPromptThisPass = false
         }
     }
 

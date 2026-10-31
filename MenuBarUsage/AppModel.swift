@@ -79,7 +79,7 @@ final class AppModel: ObservableObject {
     /// Bumped when the panel or Open Cursor asks for a usage fetch immediately.
     /// An in-flight fetch must not push that deadline back out.
     private var usageRequest = 0
-    /// Last unlock failure. Panel open retries only a sealed session, not a rejected paste.
+    /// Last unlock failure. Panel open retries only a Keychain consent failure.
     private var lastAuthFailure: AuthFailure?
     private var nextUsageFetchAt = Date()
     private var cachedCredential: SessionCredential?
@@ -214,9 +214,11 @@ final class AppModel: ObservableObject {
         panelVisible = true
         mirrorMachineMetrics()
         guard !wasOpen else { return }
-        // A sealed session can keep an older `updatedAt` from the last success.
-        // Other auth failures, including a rejected pasted token, wait for the cadence.
-        CursorSafeStorageKeychain.allowPrompt()
+        // Consent can keep an older `updatedAt` from the last success.
+        // A blob that already failed to open, and a rejected paste, wait for the cadence.
+        if sealedSessionNeedsRefresh {
+            CursorSafeStorageKeychain.allowPrompt()
+        }
         if started, UsageSchedule.shouldRefreshOnOpen(updatedAt: updatedAt, now: Date()) || sealedSessionNeedsRefresh {
             requestUsageRefreshNow()
             return
@@ -459,12 +461,7 @@ final class AppModel: ObservableObject {
     }
 
     private var sealedSessionNeedsRefresh: Bool {
-        switch lastAuthFailure {
-        case .keychain, .encrypted:
-            return true
-        case .missing, .expired, .unreadable, .rejected, nil:
-            return false
-        }
+        lastAuthFailure == .keychain
     }
 
     /// The account changed while this request was in flight. Fetch again instead of waiting out the cadence.

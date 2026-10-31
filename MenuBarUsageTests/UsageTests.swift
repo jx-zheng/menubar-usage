@@ -424,11 +424,6 @@ final class SessionCookieTests: XCTestCase {
     private static let rawPassword = Data([0x00, 0xff, 0x10, 0x7f])
     private static let rawSealedVector = "cursor-safe-storage:v1:djEwXHWB5j+luQXvcJsmEfwRN4iB/ncCzNevQ1ipVV89NK+Jitu+SM8o7gR2LBtw4a0epo0P29Gwvr6Ryb7H0H06GPtW9OSfRE14SosTDK5uUQNr7ILXZFY8H8J5Y6M5X1ZO7Mm0CYCBsoI4uY5SILl36g=="
 
-    override func setUp() {
-        super.setUp()
-        CursorSafeStorage.resetForTests()
-    }
-
     func testBuildsCookieFromJWTSubject() {
         let jwt = Self.jwt(subject: "google-oauth2|user_TEST", expiresAt: Date().addingTimeInterval(3_600))
         let cookie = SessionCookie.value(fromJWT: jwt)
