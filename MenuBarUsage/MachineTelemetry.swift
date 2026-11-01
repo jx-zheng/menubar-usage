@@ -234,9 +234,9 @@ struct DiskStatus: Equatable, Sendable {
     }
 
     /// Used share of the volume, on the same 0–100 scale as memory.
-    var usedPercent: Double? {
-        guard totalBytes > 0 else { return nil }
-        return Double(usedBytes) / Double(totalBytes) * 100
+    /// `DiskSampler` only builds a value when `totalBytes` is positive.
+    var usedPercent: Double {
+        Double(usedBytes) / Double(totalBytes) * 100
     }
 
     var freeCaption: String {
@@ -278,15 +278,6 @@ enum DiskText {
     }
 }
 
-enum DiskReading {
-    /// Nil when the volume did not report a positive size.
-    /// Free space above the total is clamped so a quirky report still draws.
-    static func status(freeBytes: UInt64?, totalBytes: UInt64?) -> DiskStatus? {
-        guard let totalBytes, totalBytes > 0, let freeBytes else { return nil }
-        return DiskStatus(freeBytes: min(freeBytes, totalBytes), totalBytes: totalBytes)
-    }
-}
-
 /// Startup volume (`/`), which is the internal disk on a Mac that boots from it.
 ///
 /// `volumeAvailableCapacityForImportantUsage` is the free space Finder shows,
@@ -301,7 +292,7 @@ enum DiskSampler {
         guard let values = try? volume.resourceValues(forKeys: keys),
               let total = values.volumeTotalCapacity, total > 0,
               let free = values.volumeAvailableCapacityForImportantUsage, free >= 0 else { return nil }
-        return DiskReading.status(freeBytes: UInt64(free), totalBytes: UInt64(total))
+        return DiskStatus(freeBytes: UInt64(free), totalBytes: UInt64(total))
     }
 }
 

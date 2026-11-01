@@ -188,7 +188,7 @@ struct UsagePanelView: View {
             metricHalfHeader(
                 symbol: "internaldrive",
                 title: "Disk",
-                value: disk.usedPercent.map(UsageFormatting.menuPercent) ?? "—"
+                value: UsageFormatting.menuPercent(disk.usedPercent)
             )
             Text(disk.freeCaption)
                 .font(.caption)
@@ -237,12 +237,7 @@ struct UsagePanelView: View {
     }
 
     private func diskAccessibility(_ disk: DiskStatus) -> String {
-        var parts = ["Disk"]
-        if let percent = disk.usedPercent {
-            parts.append(UsageFormatting.menuPercent(percent))
-        }
-        parts.append(disk.freeCaption)
-        return parts.joined(separator: ", ")
+        ["Disk", UsageFormatting.menuPercent(disk.usedPercent), disk.freeCaption].joined(separator: ", ")
     }
 
     private func batteryAccessibility(_ battery: BatteryStatus) -> String {

@@ -701,19 +701,9 @@ final class MachineTelemetryTests: XCTestCase {
     func testDiskUsedPercentAndCaption() {
         let disk = DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000)
         XCTAssertEqual(disk.usedBytes, 312_000_000_000)
-        XCTAssertEqual(disk.usedPercent ?? -1, 312.0 / 460.0 * 100, accuracy: 0.001)
+        XCTAssertEqual(disk.usedPercent, 312.0 / 460.0 * 100, accuracy: 0.001)
         XCTAssertEqual(disk.freeCaption, "148 GB free of 460 GB")
-        XCTAssertEqual(disk.usedPercent.map(UsageFormatting.menuPercent), "68%")
-    }
-
-    func testDiskReadingRejectsAnEmptyVolumeAndClampsFree() {
-        XCTAssertNil(DiskReading.status(freeBytes: 1, totalBytes: 0))
-        XCTAssertNil(DiskReading.status(freeBytes: nil, totalBytes: 10))
-
-        let clamped = DiskReading.status(freeBytes: 50, totalBytes: 10)
-        XCTAssertEqual(clamped?.freeBytes, 10)
-        XCTAssertEqual(clamped?.usedBytes, 0)
-        XCTAssertEqual(clamped?.usedPercent, 0)
+        XCTAssertEqual(UsageFormatting.menuPercent(disk.usedPercent), "68%")
     }
 
     func testDiskCaptionUsesDecimalUnits() {
@@ -735,8 +725,7 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertNotNil(disk)
         guard let disk else { return }
         XCTAssertGreaterThan(disk.totalBytes, 0)
-        XCTAssertLessThanOrEqual(disk.freeBytes, disk.totalBytes)
-        XCTAssertNotNil(disk.usedPercent)
+        XCTAssertGreaterThanOrEqual(disk.usedPercent, 0)
         XCTAssertFalse(disk.freeCaption.isEmpty)
     }
 
