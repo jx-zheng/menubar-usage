@@ -157,7 +157,7 @@ struct UsagePanelView: View {
     /// A desktop with no battery gives the width to disk. A missing disk reading
     /// leaves battery alone so the row does not show an empty half.
     private var storageRow: some View {
-        HStack(alignment: .top, spacing: 0) {
+        HStack(alignment: .top, spacing: 16) {
             if let disk = content.disk {
                 diskColumn(disk)
                     .frame(maxWidth: .infinity, alignment: .leading)
