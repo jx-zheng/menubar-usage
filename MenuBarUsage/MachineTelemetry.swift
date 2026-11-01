@@ -240,41 +240,7 @@ struct DiskStatus: Equatable, Sendable {
     }
 
     var freeCaption: String {
-        DiskText.freeLine(freeBytes: freeBytes, totalBytes: totalBytes)
-    }
-}
-
-enum DiskText {
-    private static let posix = Locale(identifier: "en_US_POSIX")
-
-    /// Decimal units, the way Finder quotes a volume. Whole gigabytes once the
-    /// value is large enough that a tenth would not fit a half-width caption.
-    static func amount(_ bytes: UInt64) -> String {
-        if bytes == 0 { return "0 GB" }
-        let gigabytes = Double(bytes) / 1_000_000_000
-        if gigabytes >= 999.5 {
-            return scaled(gigabytes / 1_000, unit: "TB")
-        }
-        if gigabytes >= 10 {
-            return "\(Int(gigabytes.rounded())) GB"
-        }
-        if gigabytes >= 1 {
-            return scaled(gigabytes, unit: "GB")
-        }
-        return "\(Int((Double(bytes) / 1_000_000).rounded())) MB"
-    }
-
-    static func freeLine(freeBytes: UInt64, totalBytes: UInt64) -> String {
-        "\(amount(freeBytes)) free of \(amount(totalBytes))"
-    }
-
-    private static func scaled(_ value: Double, unit: String) -> String {
-        let tenths = (value * 10).rounded() / 10
-        if abs(tenths - tenths.rounded()) < 0.001 {
-            return "\(Int(tenths.rounded())) \(unit)"
-        }
-        let text = String(format: "%.1f", locale: posix, tenths)
-        return "\(text) \(unit)"
+        "\(ByteText.fileString(freeBytes)) free of \(ByteText.fileString(totalBytes))"
     }
 }
 

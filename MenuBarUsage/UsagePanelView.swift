@@ -63,7 +63,7 @@ struct UsagePanelView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if content.cpuHistory.count >= 2 {
-                LevelSparkline(values: content.cpuHistory, height: 26, filled: true)
+                LevelSparkline(values: content.cpuHistory)
             }
         }
         .padding(.vertical, 8)
@@ -92,7 +92,7 @@ struct UsagePanelView: View {
                     .foregroundStyle(.secondary)
             }
             if content.memoryHistory.count >= 2 {
-                LevelSparkline(values: content.memoryHistory, height: 26, filled: true)
+                LevelSparkline(values: content.memoryHistory)
             }
         }
         .padding(.vertical, 8)
@@ -157,27 +157,14 @@ struct UsagePanelView: View {
     /// A desktop with no battery gives the width to disk. A missing disk reading
     /// leaves battery alone so the row does not show an empty half.
     private var storageRow: some View {
-        let split = content.disk != nil && content.battery != nil
-        return HStack(alignment: .top, spacing: 0) {
+        HStack(alignment: .top, spacing: 0) {
             if let disk = content.disk {
                 diskColumn(disk)
-                    .padding(.trailing, split ? 10 : 0)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let battery = content.battery {
                 batteryColumn(battery)
-                    .padding(.leading, split ? 10 : 0)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .overlay {
-            if split {
-                HStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    Divider().opacity(0.45)
-                    Spacer(minLength: 0)
-                }
-                .accessibilityHidden(true)
             }
         }
         .padding(.vertical, 8)
@@ -456,8 +443,20 @@ enum ByteText {
         return formatter
     }()
 
+    /// Finder-style decimal units for the startup volume.
+    private static let fileFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        return formatter
+    }()
+
     static func string(_ bytes: UInt64) -> String {
         formatter.string(fromByteCount: Int64(clamping: bytes))
+    }
+
+    static func fileString(_ bytes: UInt64) -> String {
+        fileFormatter.string(fromByteCount: Int64(clamping: bytes))
     }
 }
 
@@ -540,8 +539,6 @@ private struct DualSparkline: View {
 
 private struct LevelSparkline: View {
     var values: [Double]
-    var height: CGFloat = 18
-    var filled: Bool = false
 
     var body: some View {
         Canvas { context, size in
@@ -554,21 +551,18 @@ private struct LevelSparkline: View {
                 let point = CGPoint(x: x, y: y)
                 if index == 0 { line.move(to: point) } else { line.addLine(to: point) }
             }
-            if filled {
-                var area = line
-                area.addLine(to: CGPoint(x: size.width, y: size.height))
-                area.addLine(to: CGPoint(x: 0, y: size.height))
-                area.closeSubpath()
-                context.fill(area, with: .color(Color.accentColor.opacity(0.18)))
-            }
-            let lineWidth: CGFloat = filled ? 1.5 : 1.25
+            var area = line
+            area.addLine(to: CGPoint(x: size.width, y: size.height))
+            area.addLine(to: CGPoint(x: 0, y: size.height))
+            area.closeSubpath()
+            context.fill(area, with: .color(Color.accentColor.opacity(0.18)))
             context.stroke(
                 line,
                 with: .color(Color.accentColor),
-                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
             )
         }
-        .frame(height: height)
+        .frame(height: 26)
         .accessibilityHidden(true)
     }
 }

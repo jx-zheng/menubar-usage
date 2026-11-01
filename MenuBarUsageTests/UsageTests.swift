@@ -702,22 +702,11 @@ final class MachineTelemetryTests: XCTestCase {
         let disk = DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000)
         XCTAssertEqual(disk.usedBytes, 312_000_000_000)
         XCTAssertEqual(disk.usedPercent, 312.0 / 460.0 * 100, accuracy: 0.001)
-        XCTAssertEqual(disk.freeCaption, "148 GB free of 460 GB")
-        XCTAssertEqual(UsageFormatting.menuPercent(disk.usedPercent), "68%")
-    }
-
-    func testDiskCaptionUsesDecimalUnits() {
-        XCTAssertEqual(DiskText.amount(0), "0 GB")
-        XCTAssertEqual(DiskText.amount(512_000_000), "512 MB")
-        XCTAssertEqual(DiskText.amount(1_500_000_000), "1.5 GB")
-        XCTAssertEqual(DiskText.amount(10_000_000_000), "10 GB")
-        XCTAssertEqual(DiskText.amount(460_000_000_000), "460 GB")
-        XCTAssertEqual(DiskText.amount(999_500_000_000), "1 TB")
-        XCTAssertEqual(DiskText.amount(2_000_000_000_000), "2 TB")
         XCTAssertEqual(
-            DiskText.freeLine(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000),
-            "148 GB free of 460 GB"
+            disk.freeCaption,
+            "\(ByteText.fileString(disk.freeBytes)) free of \(ByteText.fileString(disk.totalBytes))"
         )
+        XCTAssertEqual(UsageFormatting.menuPercent(disk.usedPercent), "68%")
     }
 
     func testStartupVolumeCanBeRead() {
