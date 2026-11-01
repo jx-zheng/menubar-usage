@@ -709,19 +709,11 @@ final class MachineTelemetryTests: XCTestCase {
     func testDiskReadingRejectsAnEmptyVolumeAndClampsFree() {
         XCTAssertNil(DiskReading.status(freeBytes: 1, totalBytes: 0))
         XCTAssertNil(DiskReading.status(freeBytes: nil, totalBytes: 10))
-        XCTAssertNil(DiskReading.status(blockSize: 0, blocks: 10, blocksAvailable: 1))
-        XCTAssertNil(DiskReading.status(blockSize: .max, blocks: 2, blocksAvailable: 1))
 
         let clamped = DiskReading.status(freeBytes: 50, totalBytes: 10)
         XCTAssertEqual(clamped?.freeBytes, 10)
         XCTAssertEqual(clamped?.usedBytes, 0)
         XCTAssertEqual(clamped?.usedPercent, 0)
-
-        let blocks = DiskReading.status(blockSize: 4096, blocks: 100, blocksAvailable: 25)
-        XCTAssertEqual(blocks?.totalBytes, 409_600)
-        XCTAssertEqual(blocks?.freeBytes, 102_400)
-        XCTAssertEqual(blocks?.usedBytes, 307_200)
-        XCTAssertEqual(blocks?.usedPercent ?? -1, 75, accuracy: 0.001)
     }
 
     func testDiskCaptionUsesDecimalUnits() {

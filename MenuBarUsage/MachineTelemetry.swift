@@ -285,14 +285,6 @@ enum DiskReading {
         guard let totalBytes, totalBytes > 0, let freeBytes else { return nil }
         return DiskStatus(freeBytes: min(freeBytes, totalBytes), totalBytes: totalBytes)
     }
-
-    static func status(blockSize: UInt64, blocks: UInt64, blocksAvailable: UInt64) -> DiskStatus? {
-        guard blockSize > 0 else { return nil }
-        let total = blocks.multipliedReportingOverflow(by: blockSize)
-        let free = blocksAvailable.multipliedReportingOverflow(by: blockSize)
-        guard !total.overflow, !free.overflow else { return nil }
-        return status(freeBytes: free.partialValue, totalBytes: total.partialValue)
-    }
 }
 
 /// Startup volume (`/`), which is the internal disk on a Mac that boots from it.
@@ -302,38 +294,14 @@ enum DiskReading {
 /// it off the main thread and only on the slow cadence.
 enum DiskSampler {
     static func read(volume: URL = URL(fileURLWithPath: "/")) -> DiskStatus? {
-        if let status = readResources(volume) { return status }
-        return readStatfs(volume.path)
-    }
-
-    private static func readResources(_ volume: URL) -> DiskStatus? {
         let keys: Set<URLResourceKey> = [
             .volumeTotalCapacityKey,
-            .volumeAvailableCapacityForImportantUsageKey,
-            .volumeAvailableCapacityKey
+            .volumeAvailableCapacityForImportantUsageKey
         ]
         guard let values = try? volume.resourceValues(forKeys: keys),
-              let total = values.volumeTotalCapacity, total > 0 else { return nil }
-        let free: Int64?
-        if let important = values.volumeAvailableCapacityForImportantUsage, important >= 0 {
-            free = important
-        } else if let available = values.volumeAvailableCapacity, available >= 0 {
-            free = Int64(available)
-        } else {
-            free = nil
-        }
-        guard let free else { return nil }
+              let total = values.volumeTotalCapacity, total > 0,
+              let free = values.volumeAvailableCapacityForImportantUsage, free >= 0 else { return nil }
         return DiskReading.status(freeBytes: UInt64(free), totalBytes: UInt64(total))
-    }
-
-    private static func readStatfs(_ path: String) -> DiskStatus? {
-        var stats = statfs()
-        guard path.withCString({ statfs($0, &stats) }) == 0 else { return nil }
-        return DiskReading.status(
-            blockSize: UInt64(stats.f_bsize),
-            blocks: stats.f_blocks,
-            blocksAvailable: stats.f_bavail
-        )
     }
 }
 
