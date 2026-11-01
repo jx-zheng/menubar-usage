@@ -284,7 +284,8 @@ enum DiskText {
 /// including space it can purge. That value is not cached, so the caller reads
 /// it off the main thread and only on the slow cadence.
 enum DiskSampler {
-    static func read(volume: URL = URL(fileURLWithPath: "/")) -> DiskStatus? {
+    static func read() -> DiskStatus? {
+        let volume = URL(fileURLWithPath: "/")
         let keys: Set<URLResourceKey> = [
             .volumeTotalCapacityKey,
             .volumeAvailableCapacityForImportantUsageKey
