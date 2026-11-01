@@ -698,6 +698,56 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertNil(chosen?.timeCaption)
     }
 
+    func testDiskUsedPercentAndCaption() {
+        let disk = DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000)
+        XCTAssertEqual(disk.usedBytes, 312_000_000_000)
+        XCTAssertEqual(disk.usedPercent ?? -1, 312.0 / 460.0 * 100, accuracy: 0.001)
+        XCTAssertEqual(disk.freeCaption, "148 GB free of 460 GB")
+        XCTAssertEqual(disk.usedPercent.map(UsageFormatting.menuPercent), "68%")
+    }
+
+    func testDiskReadingRejectsAnEmptyVolumeAndClampsFree() {
+        XCTAssertNil(DiskReading.status(freeBytes: 1, totalBytes: 0))
+        XCTAssertNil(DiskReading.status(freeBytes: nil, totalBytes: 10))
+        XCTAssertNil(DiskReading.status(blockSize: 0, blocks: 10, blocksAvailable: 1))
+        XCTAssertNil(DiskReading.status(blockSize: .max, blocks: 2, blocksAvailable: 1))
+
+        let clamped = DiskReading.status(freeBytes: 50, totalBytes: 10)
+        XCTAssertEqual(clamped?.freeBytes, 10)
+        XCTAssertEqual(clamped?.usedBytes, 0)
+        XCTAssertEqual(clamped?.usedPercent, 0)
+
+        let blocks = DiskReading.status(blockSize: 4096, blocks: 100, blocksAvailable: 25)
+        XCTAssertEqual(blocks?.totalBytes, 409_600)
+        XCTAssertEqual(blocks?.freeBytes, 102_400)
+        XCTAssertEqual(blocks?.usedBytes, 307_200)
+        XCTAssertEqual(blocks?.usedPercent ?? -1, 75, accuracy: 0.001)
+    }
+
+    func testDiskCaptionUsesDecimalUnits() {
+        XCTAssertEqual(DiskText.amount(0), "0 GB")
+        XCTAssertEqual(DiskText.amount(512_000_000), "512 MB")
+        XCTAssertEqual(DiskText.amount(1_500_000_000), "1.5 GB")
+        XCTAssertEqual(DiskText.amount(10_000_000_000), "10 GB")
+        XCTAssertEqual(DiskText.amount(460_000_000_000), "460 GB")
+        XCTAssertEqual(DiskText.amount(999_500_000_000), "1 TB")
+        XCTAssertEqual(DiskText.amount(2_000_000_000_000), "2 TB")
+        XCTAssertEqual(
+            DiskText.freeLine(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000),
+            "148 GB free of 460 GB"
+        )
+    }
+
+    func testStartupVolumeCanBeRead() {
+        let disk = DiskSampler.read()
+        XCTAssertNotNil(disk)
+        guard let disk else { return }
+        XCTAssertGreaterThan(disk.totalBytes, 0)
+        XCTAssertLessThanOrEqual(disk.freeBytes, disk.totalBytes)
+        XCTAssertNotNil(disk.usedPercent)
+        XCTAssertFalse(disk.freeCaption.isEmpty)
+    }
+
     func testHistoryKeepsTheNewestSamples() {
         var history: [Double] = []
         for value in 0..<5 {
@@ -762,5 +812,20 @@ final class HostSampleHistoryTests: XCTestCase {
         XCTAssertEqual(model.content.memoryHistory, newest.map { $0 / 100.0 * 100.0 })
         XCTAssertEqual(model.content.cpuPercent, 34)
         XCTAssertEqual(model.content.memoryUsed, 34)
+    }
+
+    func testDiskReadingReachesTheOpenPanel() {
+        let model = AppModel()
+        model.panelDidOpen()
+        XCTAssertNil(model.content.disk)
+        XCTAssertNil(model.content.battery)
+
+        let disk = DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000)
+        model.noteDiskReading(disk)
+        XCTAssertEqual(model.content.disk, disk)
+        XCTAssertNil(model.content.battery)
+
+        model.noteDiskReading(disk)
+        XCTAssertEqual(model.content.disk, disk)
     }
 }

@@ -225,6 +225,118 @@ enum PrimaryInterface {
     }
 }
 
+struct DiskStatus: Equatable, Sendable {
+    var freeBytes: UInt64
+    var totalBytes: UInt64
+
+    var usedBytes: UInt64 {
+        totalBytes > freeBytes ? totalBytes - freeBytes : 0
+    }
+
+    /// Used share of the volume, on the same 0–100 scale as memory.
+    var usedPercent: Double? {
+        guard totalBytes > 0 else { return nil }
+        return Double(usedBytes) / Double(totalBytes) * 100
+    }
+
+    var freeCaption: String {
+        DiskText.freeLine(freeBytes: freeBytes, totalBytes: totalBytes)
+    }
+}
+
+enum DiskText {
+    private static let posix = Locale(identifier: "en_US_POSIX")
+
+    /// Decimal units, the way Finder quotes a volume. Whole gigabytes once the
+    /// value is large enough that a tenth would not fit a half-width caption.
+    static func amount(_ bytes: UInt64) -> String {
+        if bytes == 0 { return "0 GB" }
+        let gigabytes = Double(bytes) / 1_000_000_000
+        if gigabytes >= 999.5 {
+            return scaled(gigabytes / 1_000, unit: "TB")
+        }
+        if gigabytes >= 10 {
+            return "\(Int(gigabytes.rounded())) GB"
+        }
+        if gigabytes >= 1 {
+            return scaled(gigabytes, unit: "GB")
+        }
+        return "\(Int((Double(bytes) / 1_000_000).rounded())) MB"
+    }
+
+    static func freeLine(freeBytes: UInt64, totalBytes: UInt64) -> String {
+        "\(amount(freeBytes)) free of \(amount(totalBytes))"
+    }
+
+    private static func scaled(_ value: Double, unit: String) -> String {
+        let tenths = (value * 10).rounded() / 10
+        if abs(tenths - tenths.rounded()) < 0.001 {
+            return "\(Int(tenths.rounded())) \(unit)"
+        }
+        let text = String(format: "%.1f", locale: posix, tenths)
+        return "\(text) \(unit)"
+    }
+}
+
+enum DiskReading {
+    /// Nil when the volume did not report a positive size.
+    /// Free space above the total is clamped so a quirky report still draws.
+    static func status(freeBytes: UInt64?, totalBytes: UInt64?) -> DiskStatus? {
+        guard let totalBytes, totalBytes > 0, let freeBytes else { return nil }
+        return DiskStatus(freeBytes: min(freeBytes, totalBytes), totalBytes: totalBytes)
+    }
+
+    static func status(blockSize: UInt64, blocks: UInt64, blocksAvailable: UInt64) -> DiskStatus? {
+        guard blockSize > 0 else { return nil }
+        let total = blocks.multipliedReportingOverflow(by: blockSize)
+        let free = blocksAvailable.multipliedReportingOverflow(by: blockSize)
+        guard !total.overflow, !free.overflow else { return nil }
+        return status(freeBytes: free.partialValue, totalBytes: total.partialValue)
+    }
+}
+
+/// Startup volume (`/`), which is the internal disk on a Mac that boots from it.
+///
+/// `volumeAvailableCapacityForImportantUsage` is the free space Finder shows,
+/// including space it can purge. That value is not cached, so the caller reads
+/// it off the main thread and only on the slow cadence.
+enum DiskSampler {
+    static func read(volume: URL = URL(fileURLWithPath: "/")) -> DiskStatus? {
+        if let status = readResources(volume) { return status }
+        return readStatfs(volume.path)
+    }
+
+    private static func readResources(_ volume: URL) -> DiskStatus? {
+        let keys: Set<URLResourceKey> = [
+            .volumeTotalCapacityKey,
+            .volumeAvailableCapacityForImportantUsageKey,
+            .volumeAvailableCapacityKey
+        ]
+        guard let values = try? volume.resourceValues(forKeys: keys),
+              let total = values.volumeTotalCapacity, total > 0 else { return nil }
+        let free: Int64?
+        if let important = values.volumeAvailableCapacityForImportantUsage, important >= 0 {
+            free = important
+        } else if let available = values.volumeAvailableCapacity, available >= 0 {
+            free = Int64(available)
+        } else {
+            free = nil
+        }
+        guard let free else { return nil }
+        return DiskReading.status(freeBytes: UInt64(free), totalBytes: UInt64(total))
+    }
+
+    private static func readStatfs(_ path: String) -> DiskStatus? {
+        var stats = statfs()
+        guard path.withCString({ statfs($0, &stats) }) == 0 else { return nil }
+        return DiskReading.status(
+            blockSize: UInt64(stats.f_bsize),
+            blocks: stats.f_blocks,
+            blocksAvailable: stats.f_bavail
+        )
+    }
+}
+
 enum BatterySampler {
     private static let powerCallback: IOPowerSourceCallbackType = { _ in
         BatterySampler.deliverChange()
