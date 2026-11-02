@@ -762,7 +762,7 @@ final class MachineTelemetryTests: XCTestCase {
 
         let fromIOPS = BatteryStatusParser.parse(
             charging(extra: ["Voltage": 11_000, "Current": 4_000]),
-            power: ChargePowerReading(adapterWatts: 96, currentMilliamps: 9_000, voltageMillivolts: 5_000)
+            power: ChargePowerReading(voltageMillivolts: 5_000, currentMilliamps: 9_000, adapterWatts: 96)
         )
         XCTAssertEqual(fromIOPS?.chargeWatts, 44)
         XCTAssertEqual(fromIOPS?.sourceCaption, "Charging · 44 W")
@@ -863,7 +863,7 @@ final class MachineTelemetryTests: XCTestCase {
             "Is Charging": false,
             "Power Source State": "AC Power",
             "Transport Type": "Internal"
-        ], power: ChargePowerReading(adapterWatts: 45, voltageMillivolts: 12_600, currentMilliamps: 0))
+        ], power: ChargePowerReading(voltageMillivolts: 12_600, currentMilliamps: 0, adapterWatts: 45))
         XCTAssertEqual(ac?.sourceCaption, "AC power")
         XCTAssertNil(ac?.minutesRemaining)
         XCTAssertNil(ac?.timeCaption)
