@@ -216,12 +216,13 @@ enum BatteryStatusParser {
     /// Voltage is IOPS `Voltage` when it is positive; otherwise AppleSmartBattery
     /// `Voltage`, then `AppleRawBatteryVoltage`. When IOPS has no `Current` key,
     /// current is `InstantAmperage`, then `Amperage`. `AdapterDetails.Watts` is
-    /// the negotiated adapter tier and is used only when voltage and current do
-    /// not produce a plausible power. About 0 W stays unset so the caption is
-    /// `Charging` with no fabricated number. Registry values apply to the
-    /// internal battery (or a source that does not name a transport).
+    /// the negotiated adapter tier and is used only when voltage or current is
+    /// missing, so that product cannot be formed. A formed product that is about
+    /// 0 W or above a laptop charge rate stays unset, and the caption is
+    /// `Charging` with no number. Registry values apply to the internal battery
+    /// (or a source that does not name a transport).
     private static func chargeWatts(iops: [String: Any], registry: ChargePowerReading) -> Double? {
-        let voltage = positive(iops[kIOPSVoltageKey as String]) ?? finitePositive(registry.voltageMillivolts)
+        let voltage = positive(iops[kIOPSVoltageKey as String]) ?? registry.voltageMillivolts.flatMap { positive($0) }
         let current: Double?
         switch sample(iops[kIOPSCurrentKey as String]) {
         case .value(let value):
@@ -230,10 +231,7 @@ enum BatteryStatusParser {
             current = registry.currentMilliamps
         }
         if let voltage, let current {
-            let instant = voltage * abs(current) / 1_000_000
-            if instant.isFinite, instant >= 0, instant <= ChargeWatts.maximum {
-                return ChargeWatts.displayWatts(instant)
-            }
+            return ChargeWatts.displayWatts(voltage * abs(current) / 1_000_000)
         }
         return registry.adapterWatts.flatMap(ChargeWatts.displayWatts)
     }
@@ -258,11 +256,6 @@ enum BatteryStatusParser {
     private static func positive(_ value: Any?) -> Double? {
         guard case .value(let number) = sample(value), number > 0 else { return nil }
         return number
-    }
-
-    private static func finitePositive(_ value: Double?) -> Double? {
-        guard let value, value.isFinite, value > 0 else { return nil }
-        return value
     }
 
     private static func adapterWatts(_ value: Any?) -> Double? {
@@ -415,9 +408,18 @@ enum DiskSampler {
     }
 }
 
-/// AppleSmartBattery properties used when a charging internal battery has no
-/// IOPS voltage or current. `Voltage` is mV and `Current` / `InstantAmperage` are mA.
+/// AppleSmartBattery keys used when a charging internal battery has no IOPS
+/// voltage or current. `Voltage` / `AppleRawBatteryVoltage` are mV.
+/// `InstantAmperage` / `Amperage` are mA. `AdapterDetails` is the negotiated adapter.
 enum SmartBatteryPower {
+    private static let keys = [
+        "Voltage",
+        "AppleRawBatteryVoltage",
+        "InstantAmperage",
+        "Amperage",
+        "AdapterDetails"
+    ]
+
     static func read() -> ChargePowerReading {
         let service = IOServiceGetMatchingService(
             kIOMainPortDefault,
@@ -426,18 +428,24 @@ enum SmartBatteryPower {
         guard service != IO_OBJECT_NULL else { return .empty }
         defer { IOObjectRelease(service) }
 
-        var properties: Unmanaged<CFMutableDictionary>?
-        let result = IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0)
-        guard result == KERN_SUCCESS, let raw = properties?.takeRetainedValue() as NSDictionary? else {
-            return .empty
+        var properties: [String: Any] = [:]
+        for key in keys {
+            if let value = copyProperty(service, key: key) {
+                properties[key] = value
+            }
         }
-        var parsed: [String: Any] = [:]
-        parsed.reserveCapacity(raw.count)
-        for key in raw.allKeys {
-            guard let key = key as? String, let value = raw.object(forKey: key) else { continue }
-            parsed[key] = value
-        }
-        return BatteryStatusParser.powerReading(registryProperties: parsed)
+        return BatteryStatusParser.powerReading(registryProperties: properties)
+    }
+
+    /// One registry value. The Create call returns +1, so the result is consumed here.
+    private static func copyProperty(_ service: io_registry_entry_t, key: String) -> Any? {
+        guard let unmanaged = IORegistryEntryCreateCFProperty(
+            service,
+            key as CFString,
+            kCFAllocatorDefault,
+            0
+        ) else { return nil }
+        return unmanaged.takeRetainedValue()
     }
 }
 

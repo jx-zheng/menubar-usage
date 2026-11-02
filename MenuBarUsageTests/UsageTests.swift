@@ -801,13 +801,14 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertNil(measuredZero?.chargeWatts)
         XCTAssertEqual(measuredZero?.sourceCaption, "Charging")
 
-        // 5_000 V × 5 A is not a charge rate. The adapter tier is then allowed.
+        // 5_000 V × 5 A forms a product above a laptop charge rate. The adapter tier stays unused.
         let implausible = BatteryStatusParser.parse(charging(), power: ChargePowerReading(
             voltageMillivolts: 5_000_000,
             currentMilliamps: 5_000,
             adapterWatts: 45
         ))
-        XCTAssertEqual(implausible?.sourceCaption, "Charging · 45 W")
+        XCTAssertNil(implausible?.chargeWatts)
+        XCTAssertEqual(implausible?.sourceCaption, "Charging")
 
         let absurdAdapter = BatteryStatusParser.parse(charging(), power: ChargePowerReading(adapterWatts: 5_000))
         XCTAssertNil(absurdAdapter?.chargeWatts)
