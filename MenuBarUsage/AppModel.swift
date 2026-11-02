@@ -557,11 +557,17 @@ final class AppModel: ObservableObject {
         mirrorMachineMetrics()
     }
 
-    private func recordBattery(force: Bool) {
-        let now = Date()
+    /// Power-source notifications (`force`) re-read immediately so percent, source,
+    /// and minutes stay current. Inside the 30s window a watts-only change keeps
+    /// the last good rate until the next cadence sample.
+    func recordBattery(
+        force: Bool,
+        now: Date = Date(),
+        read: () -> BatteryStatus? = { BatterySampler.read() }
+    ) {
         let due = now.timeIntervalSince(lastBatterySample) >= UsageSchedule.batteryInterval
         if !force, !due { return }
-        guard let reading = BatterySampler.read() else {
+        guard let reading = read() else {
             let hadBattery = batteryValue != nil
             guard hadBattery else {
                 if due { lastBatterySample = now }
@@ -572,8 +578,9 @@ final class AppModel: ObservableObject {
             mirrorMachineMetrics()
             return
         }
-        // A power-source notification with the same charge waits for the normal cadence.
-        if batteryValue == reading, !due { return }
+        if !due, let current = batteryValue, current.hasSameChargeIdentity(as: reading) {
+            return
+        }
         lastBatterySample = now
         batteryValue = reading
         mirrorMachineMetrics()

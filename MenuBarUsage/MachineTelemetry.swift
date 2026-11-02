@@ -80,6 +80,13 @@ struct BatteryStatus: Equatable {
     /// Instantaneous charge power in watts, only while charging and only when a reading exists.
     var chargeWatts: Double? = nil
 
+    /// Percent, source, and minutes. Charge watts stay on the sample cadence.
+    func hasSameChargeIdentity(as other: BatteryStatus) -> Bool {
+        percent == other.percent
+            && source == other.source
+            && minutesRemaining == other.minutesRemaining
+    }
+
     /// First caption under the percent: source, with watts while charging when known.
     var sourceCaption: String {
         guard source == .charging, let chargeWatts, let watts = ChargeWatts.text(chargeWatts) else {
@@ -141,12 +148,20 @@ struct ChargePowerReading: Equatable {
 
 enum BatteryStatusParser {
     static func choose(_ descriptions: [[String: Any]], power: ChargePowerReading = .empty) -> BatteryStatus? {
-        let parsed: [(BatteryStatus, Bool)] = descriptions.compactMap { description in
-            guard let status = parse(description, power: power) else { return nil }
-            let transport = description[kIOPSTransportTypeKey as String] as? String
-            return (status, transport == (kIOPSInternalType as String))
+        guard let description = chosenDescription(descriptions) else { return nil }
+        return parse(description, power: power)
+    }
+
+    /// Internal battery when one reports capacity; otherwise the first that does.
+    /// `BatterySampler` and `choose` share this so the registry gate matches the result.
+    fileprivate static func chosenDescription(_ descriptions: [[String: Any]]) -> [String: Any]? {
+        let reported = descriptions.filter { parse($0) != nil }
+        let transport = kIOPSTransportTypeKey as String
+        let internalType = kIOPSInternalType as String
+        if let match = reported.first(where: { ($0[transport] as? String) == internalType }) {
+            return match
         }
-        return parsed.first(where: \.1)?.0 ?? parsed.first?.0
+        return reported.first
     }
 
     static func parse(_ description: [String: Any], power: ChargePowerReading = .empty) -> BatteryStatus? {
@@ -183,6 +198,14 @@ enum BatteryStatusParser {
             currentMilliamps: sample(registryProperties["InstantAmperage"]),
             adapterWatts: adapterWatts(registryProperties["AdapterDetails"])
         )
+    }
+
+    /// Positive IOPS `Voltage` and a finite IOPS `Current`, including 0 and negative.
+    /// `chargeWatts` then ignores the registry. `BatterySampler` uses this, and only
+    /// this, to decide whether to call `SmartBatteryPower.read()`.
+    static func iopsCanSupplyChargeInputs(_ description: [String: Any]) -> Bool {
+        positive(description[kIOPSVoltageKey as String]) != nil
+            && sample(description[kIOPSCurrentKey as String]) != nil
     }
 
     /// Instantaneous charge power is voltage (mV) × current (mA) / 1_000_000
@@ -370,7 +393,8 @@ enum DiskSampler {
     }
 }
 
-/// AppleSmartBattery keys for charge watts, read while any source is charging.
+/// AppleSmartBattery keys for charge watts. Read only when the chosen source is
+/// charging and IOPS cannot supply voltage and current.
 /// `Voltage` is mV. `InstantAmperage` is mA. `AdapterDetails` is the negotiated adapter.
 enum SmartBatteryPower {
     private static let keys = [
@@ -433,19 +457,36 @@ enum BatterySampler {
     }
 
     static func read() -> BatteryStatus? {
+        guard let descriptions = powerSourceDescriptions() else { return nil }
+        return status(from: descriptions)
+    }
+
+    /// Resolves one battery. The registry closure runs only when that source is
+    /// charging and `iopsCanSupplyChargeInputs` is false.
+    static func status(
+        from descriptions: [[String: Any]],
+        registry: () -> ChargePowerReading = { SmartBatteryPower.read() }
+    ) -> BatteryStatus? {
+        guard let chosen = BatteryStatusParser.chosenDescription(descriptions) else { return nil }
+        let power: ChargePowerReading
+        if BatteryStatusParser.boolValue(chosen[kIOPSIsChargingKey as String]) == true,
+           !BatteryStatusParser.iopsCanSupplyChargeInputs(chosen) {
+            power = registry()
+        } else {
+            power = .empty
+        }
+        return BatteryStatusParser.parse(chosen, power: power)
+    }
+
+    private static func powerSourceDescriptions() -> [[String: Any]]? {
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue() else { return nil }
         guard let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any] else { return nil }
-        let descriptions: [[String: Any]] = list.compactMap { source in
+        return list.compactMap { source in
             guard let description = IOPSGetPowerSourceDescription(blob, source as CFTypeRef)?.takeUnretainedValue() else {
                 return nil
             }
             return description as? [String: Any]
         }
-        let charging = descriptions.contains {
-            BatteryStatusParser.boolValue($0[kIOPSIsChargingKey as String]) == true
-        }
-        let power = charging ? SmartBatteryPower.read() : .empty
-        return BatteryStatusParser.choose(descriptions, power: power)
     }
 }
 
