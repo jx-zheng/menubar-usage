@@ -461,26 +461,21 @@ enum BatterySampler {
         return status(from: descriptions)
     }
 
-    /// Resolves one battery. The registry closure runs only when the chosen
-    /// source is charging and `iopsCanSupplyChargeInputs` is false.
+    /// Resolves one battery. The registry closure runs only when that source is
+    /// charging and `iopsCanSupplyChargeInputs` is false.
     static func status(
         from descriptions: [[String: Any]],
         registry: () -> ChargePowerReading = { SmartBatteryPower.read() }
     ) -> BatteryStatus? {
-        let power = chargePower(for: descriptions, registry: registry)
-        return BatteryStatusParser.choose(descriptions, power: power)
-    }
-
-    private static func chargePower(
-        for descriptions: [[String: Any]],
-        registry: () -> ChargePowerReading
-    ) -> ChargePowerReading {
-        guard let chosen = BatteryStatusParser.chosenDescription(descriptions),
-              BatteryStatusParser.boolValue(chosen[kIOPSIsChargingKey as String]) == true,
-              !BatteryStatusParser.iopsCanSupplyChargeInputs(chosen) else {
-            return .empty
+        guard let chosen = BatteryStatusParser.chosenDescription(descriptions) else { return nil }
+        let power: ChargePowerReading
+        if BatteryStatusParser.boolValue(chosen[kIOPSIsChargingKey as String]) == true,
+           !BatteryStatusParser.iopsCanSupplyChargeInputs(chosen) {
+            power = registry()
+        } else {
+            power = .empty
         }
-        return registry()
+        return BatteryStatusParser.parse(chosen, power: power)
     }
 
     private static func powerSourceDescriptions() -> [[String: Any]]? {
