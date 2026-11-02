@@ -951,6 +951,172 @@ final class MachineTelemetryTests: XCTestCase {
         return description
     }
 
+    func testIOPSChargeInputsArePositiveVoltageAndFiniteCurrent() {
+        XCTAssertTrue(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(current: 4_000, extra: ["Voltage": 11_000])
+        ))
+        XCTAssertTrue(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(current: 0, extra: ["Voltage": 11_000])
+        ))
+        XCTAssertTrue(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(current: -50, extra: ["Voltage": 11_000])
+        ))
+        XCTAssertFalse(BatteryStatusParser.iopsCanSupplyChargeInputs(charging(current: 4_000)))
+        XCTAssertFalse(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(current: 4_000, extra: ["Voltage": 0])
+        ))
+        XCTAssertFalse(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(current: 4_000, extra: ["Voltage": -1])
+        ))
+        XCTAssertFalse(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(extra: ["Voltage": 11_000])
+        ))
+        XCTAssertFalse(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(current: Double.nan, extra: ["Voltage": 11_000])
+        ))
+        XCTAssertFalse(BatteryStatusParser.iopsCanSupplyChargeInputs(
+            charging(current: Double.infinity, extra: ["Voltage": 11_000])
+        ))
+    }
+
+    func testCompleteIOPSChargeInputsIgnoreRegistry() {
+        let cases: [[String: Any]] = [
+            charging(current: 4_000, extra: ["Voltage": 11_000]),
+            charging(current: 0, extra: ["Voltage": 12_000]),
+            charging(current: -5_338, extra: ["Voltage": 12_000])
+        ]
+        let registry = ChargePowerReading(
+            voltageMillivolts: 5_000,
+            currentMilliamps: 9_000,
+            adapterWatts: 96
+        )
+        for description in cases {
+            XCTAssertTrue(BatteryStatusParser.iopsCanSupplyChargeInputs(description))
+            XCTAssertEqual(
+                BatteryStatusParser.parse(description, power: registry),
+                BatteryStatusParser.parse(description, power: .empty)
+            )
+        }
+    }
+
+    func testSamplerSkipsRegistryWhenIOPSCanSupplyChargeInputs() {
+        var reads = 0
+        let status = BatterySampler.status(from: [
+            charging(current: 4_000, extra: ["Voltage": 11_000])
+        ], registry: {
+            reads += 1
+            return ChargePowerReading(voltageMillivolts: 5_000, currentMilliamps: 9_000, adapterWatts: 96)
+        })
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(status?.chargeWatts, 44)
+        XCTAssertEqual(status?.sourceCaption, "Charging · 44 W")
+    }
+
+    func testSamplerSkipsRegistryWhenCurrentIsNotPositive() {
+        var reads = 0
+        let status = BatterySampler.status(from: [
+            charging(current: 0, extra: ["Voltage": 12_000])
+        ], registry: {
+            reads += 1
+            return ChargePowerReading(voltageMillivolts: 12_000, currentMilliamps: 4_000, adapterWatts: 96)
+        })
+        XCTAssertEqual(reads, 0)
+        XCTAssertNil(status?.chargeWatts)
+        XCTAssertEqual(status?.sourceCaption, "Charging")
+
+        let negative = BatterySampler.status(from: [
+            charging(current: -5_338, extra: ["Voltage": 12_000])
+        ], registry: {
+            reads += 1
+            return ChargePowerReading(adapterWatts: 96)
+        })
+        XCTAssertEqual(reads, 0)
+        XCTAssertNil(negative?.chargeWatts)
+    }
+
+    func testSamplerReadsRegistryWhenIOPSCannotFormChargeInputs() {
+        var missingVoltageReads = 0
+        let fromRegistryVoltage = BatterySampler.status(from: [
+            charging(current: 2_000)
+        ], registry: {
+            missingVoltageReads += 1
+            return ChargePowerReading(voltageMillivolts: 12_600, adapterWatts: 45)
+        })
+        XCTAssertEqual(missingVoltageReads, 1)
+        XCTAssertEqual(fromRegistryVoltage?.sourceCaption, "Charging · 25.2 W")
+
+        var zeroVoltageReads = 0
+        let zeroVoltage = BatterySampler.status(from: [
+            charging(current: 2_000, extra: ["Voltage": 0])
+        ], registry: {
+            zeroVoltageReads += 1
+            return ChargePowerReading(voltageMillivolts: 11_000, adapterWatts: 96)
+        })
+        XCTAssertEqual(zeroVoltageReads, 1)
+        XCTAssertEqual(zeroVoltage?.chargeWatts, 22)
+
+        var missingCurrentReads = 0
+        let adapterOnly = BatterySampler.status(from: [
+            charging(extra: ["Voltage": 12_000])
+        ], registry: {
+            missingCurrentReads += 1
+            return ChargePowerReading(adapterWatts: 45)
+        })
+        XCTAssertEqual(missingCurrentReads, 1)
+        XCTAssertEqual(adapterOnly?.chargeWatts, 45)
+
+        var nonFiniteReads = 0
+        let nonFiniteCurrent = BatterySampler.status(from: [
+            charging(current: Double.nan, extra: ["Voltage": 12_000])
+        ], registry: {
+            nonFiniteReads += 1
+            return ChargePowerReading(voltageMillivolts: 1, currentMilliamps: 2_000, adapterWatts: 96)
+        })
+        XCTAssertEqual(nonFiniteReads, 1)
+        XCTAssertEqual(nonFiniteCurrent?.chargeWatts, 24)
+    }
+
+    func testSamplerSkipsRegistryUnlessTheChosenSourceNeedsIt() {
+        var reads = 0
+        let registry = {
+            reads += 1
+            return ChargePowerReading(voltageMillivolts: 12_000, currentMilliamps: 5_338, adapterWatts: 96)
+        }
+        let incompleteUSB: [String: Any] = [
+            "Current Capacity": 10,
+            "Max Capacity": 100,
+            "Is Charging": true,
+            "Transport Type": "USB"
+        ]
+        let completeInternal = BatterySampler.status(from: [
+            incompleteUSB,
+            charging(current: -100, extra: ["Voltage": 12_000])
+        ], registry: registry)
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(completeInternal?.percent ?? -1, 56, accuracy: 0.001)
+        XCTAssertNil(completeInternal?.chargeWatts)
+
+        let idleInternal: [String: Any] = [
+            "Current Capacity": 100,
+            "Max Capacity": 100,
+            "Is Charging": false,
+            "Power Source State": "AC Power",
+            "Transport Type": "Internal"
+        ]
+        let notCharging = BatterySampler.status(from: [incompleteUSB, idleInternal], registry: registry)
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(notCharging?.source, .powerAdapter)
+        XCTAssertNil(notCharging?.chargeWatts)
+
+        let incompleteInternal = BatterySampler.status(from: [
+            charging(current: 2_000, extra: ["Voltage": 5_000, "Transport Type": "USB"]),
+            charging()
+        ], registry: registry)
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(incompleteInternal?.percent ?? -1, 56, accuracy: 0.001)
+        XCTAssertEqual(incompleteInternal?.sourceCaption, "Charging · 64.1 W")
+    }
+
     func testHistoryKeepsTheNewestSamples() {
         var history: [Double] = []
         for value in 0..<5 {
@@ -1030,5 +1196,74 @@ final class HostSampleHistoryTests: XCTestCase {
 
         model.noteDiskReading(disk)
         XCTAssertEqual(model.content.disk, disk)
+    }
+
+    func testChargeWattsWaitForTheCadenceInsideTheSampleWindow() {
+        let model = AppModel()
+        model.panelDidOpen()
+        let start = Date(timeIntervalSince1970: 10_000)
+        let held = BatteryStatus(percent: 77, source: .charging, minutesRemaining: 69, chargeWatts: 19.7)
+        let twitched = BatteryStatus(percent: 77, source: .charging, minutesRemaining: 69, chargeWatts: 45)
+        XCTAssertNotEqual(held, twitched)
+        XCTAssertTrue(held.hasSameChargeIdentity(as: twitched))
+
+        var reads = 0
+        model.recordBattery(force: true, now: start, read: {
+            reads += 1
+            return held
+        })
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(model.content.battery, held)
+
+        model.recordBattery(force: true, now: start.addingTimeInterval(10), read: {
+            reads += 1
+            return twitched
+        })
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(model.content.battery, held)
+
+        model.recordBattery(force: false, now: start.addingTimeInterval(20), read: {
+            reads += 1
+            return twitched
+        })
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(model.content.battery?.chargeWatts, 19.7)
+
+        model.recordBattery(force: false, now: start.addingTimeInterval(30), read: {
+            reads += 1
+            return twitched
+        })
+        XCTAssertEqual(reads, 3)
+        XCTAssertEqual(model.content.battery, twitched)
+    }
+
+    func testPowerNotificationStillAppliesPercentSourceAndMinutes() {
+        let model = AppModel()
+        model.panelDidOpen()
+        let start = Date(timeIntervalSince1970: 20_000)
+        let charging = BatteryStatus(percent: 77, source: .charging, minutesRemaining: 69, chargeWatts: 19.7)
+        model.recordBattery(force: true, now: start, read: { charging })
+
+        let sooner = BatteryStatus(percent: 77, source: .charging, minutesRemaining: 40, chargeWatts: 30)
+        model.recordBattery(force: true, now: start.addingTimeInterval(5), read: { sooner })
+        XCTAssertEqual(model.content.battery, sooner)
+
+        let fuller = BatteryStatus(percent: 80, source: .charging, minutesRemaining: 40, chargeWatts: 12)
+        model.recordBattery(force: true, now: start.addingTimeInterval(10), read: { fuller })
+        XCTAssertEqual(model.content.battery, fuller)
+
+        let unplugged = BatteryStatus(percent: 80, source: .battery, minutesRemaining: 100, chargeWatts: nil)
+        model.recordBattery(force: true, now: start.addingTimeInterval(12), read: { unplugged })
+        XCTAssertEqual(model.content.battery, unplugged)
+
+        // The unplug moved the cadence clock, so a quiet tick before 30s does not apply.
+        let later = BatteryStatus(percent: 79, source: .battery, minutesRemaining: 90, chargeWatts: nil)
+        model.recordBattery(force: false, now: start.addingTimeInterval(30), read: { later })
+        XCTAssertEqual(model.content.battery, unplugged)
+        model.recordBattery(force: false, now: start.addingTimeInterval(12 + 30), read: { later })
+        XCTAssertEqual(model.content.battery, later)
+
+        model.recordBattery(force: true, now: start.addingTimeInterval(50), read: { nil })
+        XCTAssertNil(model.content.battery)
     }
 }

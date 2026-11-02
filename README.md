@@ -9,7 +9,7 @@ Requires macOS 13 or later. The status item is a SwiftUI `MenuBarExtra` with the
 
 ![Usage panel](docs/screenshots/panel.png)
 
-CPU, memory, network, battery, and AI usage in the menu bar panel.
+CPU, memory, network, disk free and used of total, charging watts, and AI usage in the menu bar panel.
 
 ![Status item](docs/screenshots/status-item.png)
 
