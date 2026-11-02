@@ -48,16 +48,17 @@ The status item is one template image laid out by AppKit: a monochrome `cpu` sym
 build/DerivedData/Build/Products/Debug/MenuBarUsage.app/Contents/MacOS/MenuBarUsage --dump-status-image /tmp/status.png
 ```
 
-That writes a 4× preview of the `36%` / `68%` label. It does not spell CPU or Mem, and it does not include the chart-bars icon. Network, battery, and AI usage stay in the panel.
+That writes a 4× preview of the `36%` / `68%` label. It does not spell CPU or Mem, and it does not include the chart-bars icon. Network, disk, battery, and AI usage stay in the panel.
 
 ## What the panel shows
 
-The panel opens on this Mac. CPU, memory, network, and battery are the first group. Cursor and Grok usage follow in a shorter **AI usage** section. There is no "Usage" title and no plan badge at the top. The plan name is a caption on the AI section. The footer opens Activity Monitor.
+The panel opens on this Mac. CPU, memory, network, and disk with battery are the first group. Cursor and Grok usage follow in a shorter **AI usage** section. There is no "Usage" title and no plan badge at the top. The plan name is a caption on the AI section. The footer opens Activity Monitor.
 
 - **CPU**: percent from Mach host CPU ticks, an “All cores” line, and a graph of recent samples scaled from 0 to 100. Refreshed about every 3 seconds while the panel is open, and about every 5 seconds while it is closed. The first percent arrives after the second tick, about a second after launch. Sampling pauses while the Mac is asleep, the displays are asleep, or the session is locked.
 - **Memory**: used and total, and a graph of recent used percent on the same scale and cadence. Used memory is active + wired + compressed pages; the total is `ProcessInfo.physicalMemory`.
 - **Network**: down and up rates for the primary interface, with a short sparkline of recent samples. Same cadence as CPU. The primary interface name is cached for about 45 seconds.
-- **Battery**: percent, whether it is charging, on AC power, or on battery, and time remaining when the system reports it. Desktops with no battery omit this row. Checked about every 30 seconds and when the power source changes. A short sparkline shows recent charge level.
+- **Disk**: used percent of the startup volume, and free space of the total. It shares one row with battery: equal columns when the Mac has a battery, and the full width of that row when it does not. No graph. Read from `/` about every 30 seconds, and again when the panel opens. The read runs off the main thread and uses the free-space figure Finder shows for that volume. A failed read keeps the last number, or hides the disk side if there has never been one.
+- **Battery**: percent, whether it is charging, on AC power, or on battery, and time remaining when the system reports it. Shown beside disk, with no sparkline. Desktops with no battery omit the battery side and leave disk full width. Checked about every 30 seconds and when the power source changes.
 - **AI usage**: Grok Bot and Cursor pools. About every 90 seconds while the panel is open, and about every 12 minutes while it is closed. Opening the panel refreshes immediately when the last result is more than a minute old. Plan info is requested at most once an hour. A transport failure backs off, up to 30 minutes. The session-token control stays here, collapsed.
 
 Legacy Cursor plans (Pro, Pro+, and the other monthly plans) keep separate meters:

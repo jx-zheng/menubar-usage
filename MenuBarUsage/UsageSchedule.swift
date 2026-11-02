@@ -10,6 +10,8 @@ enum UsageSchedule {
     static let openSystemInterval: TimeInterval = 3
     static let closedSystemInterval: TimeInterval = 5
     static let batteryInterval: TimeInterval = 30
+    /// Startup-volume capacity changes slowly, so disk uses the battery cadence.
+    static let diskInterval: TimeInterval = 30
 
     static func usageInterval(panelOpen: Bool, transportFailures: Int) -> TimeInterval {
         let base = panelOpen ? openUsageInterval : closedUsageInterval

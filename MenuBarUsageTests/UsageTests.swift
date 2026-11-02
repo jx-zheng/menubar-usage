@@ -698,6 +698,26 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertNil(chosen?.timeCaption)
     }
 
+    func testDiskUsedPercentAndCaption() {
+        let disk = DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000)
+        XCTAssertEqual(disk.usedBytes, 312_000_000_000)
+        XCTAssertEqual(disk.usedPercent, 312.0 / 460.0 * 100, accuracy: 0.001)
+        XCTAssertEqual(
+            disk.freeCaption,
+            "\(ByteText.fileString(disk.freeBytes)) free of \(ByteText.fileString(disk.totalBytes))"
+        )
+        XCTAssertEqual(UsageFormatting.menuPercent(disk.usedPercent), "68%")
+    }
+
+    func testStartupVolumeCanBeRead() {
+        let disk = DiskSampler.read()
+        XCTAssertNotNil(disk)
+        guard let disk else { return }
+        XCTAssertGreaterThan(disk.totalBytes, 0)
+        XCTAssertGreaterThanOrEqual(disk.usedPercent, 0)
+        XCTAssertFalse(disk.freeCaption.isEmpty)
+    }
+
     func testHistoryKeepsTheNewestSamples() {
         var history: [Double] = []
         for value in 0..<5 {
@@ -762,5 +782,20 @@ final class HostSampleHistoryTests: XCTestCase {
         XCTAssertEqual(model.content.memoryHistory, newest.map { $0 / 100.0 * 100.0 })
         XCTAssertEqual(model.content.cpuPercent, 34)
         XCTAssertEqual(model.content.memoryUsed, 34)
+    }
+
+    func testDiskReadingReachesTheOpenPanel() {
+        let model = AppModel()
+        model.panelDidOpen()
+        XCTAssertNil(model.content.disk)
+        XCTAssertNil(model.content.battery)
+
+        let disk = DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000)
+        model.noteDiskReading(disk)
+        XCTAssertEqual(model.content.disk, disk)
+        XCTAssertNil(model.content.battery)
+
+        model.noteDiskReading(disk)
+        XCTAssertEqual(model.content.disk, disk)
     }
 }

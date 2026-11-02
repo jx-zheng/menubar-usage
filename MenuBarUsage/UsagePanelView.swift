@@ -37,9 +37,9 @@ struct UsagePanelView: View {
             memoryRow
             metricDivider
             networkRow
-            if content.battery != nil {
+            if content.disk != nil || content.battery != nil {
                 metricDivider
-                batteryRow
+                storageRow
             }
         }
     }
@@ -63,7 +63,7 @@ struct UsagePanelView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if content.cpuHistory.count >= 2 {
-                LevelSparkline(values: content.cpuHistory, height: 26, filled: true)
+                LevelSparkline(values: content.cpuHistory)
             }
         }
         .padding(.vertical, 8)
@@ -92,7 +92,7 @@ struct UsagePanelView: View {
                     .foregroundStyle(.secondary)
             }
             if content.memoryHistory.count >= 2 {
-                LevelSparkline(values: content.memoryHistory, height: 26, filled: true)
+                LevelSparkline(values: content.memoryHistory)
             }
         }
         .padding(.vertical, 8)
@@ -153,40 +153,93 @@ struct UsagePanelView: View {
         content.networkUp.map { "↑ \(Throughput.rate($0))" } ?? "↑ —"
     }
 
-    private var batteryRow: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                metricIcon(batterySymbol)
-                Text("Battery")
-                    .font(.callout.weight(.medium))
-                Spacer(minLength: 8)
-                Text(content.battery.map { UsageFormatting.menuPercent($0.percent) } ?? "—")
-                    .font(.callout.weight(.semibold))
-                    .monospacedDigit()
-                if let source = content.battery?.source.label {
-                    Text(source)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+    /// Disk and battery share the slot the battery row used to fill. No graphs.
+    /// A desktop with no battery gives the width to disk. A missing disk reading
+    /// leaves battery alone so the row does not show an empty half.
+    private var storageRow: some View {
+        HStack(alignment: .top, spacing: 16) {
+            if let disk = content.disk {
+                diskColumn(disk)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let caption = content.battery?.timeCaption {
-                Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if content.batteryHistory.count >= 2 {
-                LevelSparkline(values: content.batteryHistory)
+            if let battery = content.battery {
+                batteryColumn(battery)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.vertical, 8)
-        .accessibilityElement(children: .combine)
     }
 
-    private var batterySymbol: String {
-        switch content.battery?.source {
+    private func diskColumn(_ disk: DiskStatus) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            metricHalfHeader(
+                symbol: "internaldrive",
+                title: "Disk",
+                value: UsageFormatting.menuPercent(disk.usedPercent)
+            )
+            Text(disk.freeCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(diskAccessibility(disk))
+    }
+
+    private func batteryColumn(_ battery: BatteryStatus) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            metricHalfHeader(
+                symbol: batterySymbol(battery.source),
+                title: "Battery",
+                value: UsageFormatting.menuPercent(battery.percent)
+            )
+            Text(battery.source.label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            if let caption = battery.timeCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(batteryAccessibility(battery))
+    }
+
+    private func metricHalfHeader(symbol: String, title: String, value: String) -> some View {
+        HStack(spacing: 8) {
+            metricIcon(symbol)
+            Text(title)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(value)
+                .font(.callout.weight(.semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .layoutPriority(1)
+        }
+    }
+
+    private func diskAccessibility(_ disk: DiskStatus) -> String {
+        ["Disk", UsageFormatting.menuPercent(disk.usedPercent), disk.freeCaption].joined(separator: ", ")
+    }
+
+    private func batteryAccessibility(_ battery: BatteryStatus) -> String {
+        var parts = ["Battery", UsageFormatting.menuPercent(battery.percent), battery.source.label]
+        if let caption = battery.timeCaption {
+            parts.append(caption)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private func batterySymbol(_ source: BatterySource) -> String {
+        switch source {
         case .charging: return "bolt.fill"
         case .powerAdapter: return "powerplug"
-        case .battery, nil: return "battery.100"
+        case .battery: return "battery.100"
         }
     }
 
@@ -390,8 +443,20 @@ enum ByteText {
         return formatter
     }()
 
+    /// Finder-style decimal units for the startup volume.
+    private static let fileFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        return formatter
+    }()
+
     static func string(_ bytes: UInt64) -> String {
         formatter.string(fromByteCount: Int64(clamping: bytes))
+    }
+
+    static func fileString(_ bytes: UInt64) -> String {
+        fileFormatter.string(fromByteCount: Int64(clamping: bytes))
     }
 }
 
@@ -474,8 +539,6 @@ private struct DualSparkline: View {
 
 private struct LevelSparkline: View {
     var values: [Double]
-    var height: CGFloat = 18
-    var filled: Bool = false
 
     var body: some View {
         Canvas { context, size in
@@ -488,21 +551,18 @@ private struct LevelSparkline: View {
                 let point = CGPoint(x: x, y: y)
                 if index == 0 { line.move(to: point) } else { line.addLine(to: point) }
             }
-            if filled {
-                var area = line
-                area.addLine(to: CGPoint(x: size.width, y: size.height))
-                area.addLine(to: CGPoint(x: 0, y: size.height))
-                area.closeSubpath()
-                context.fill(area, with: .color(Color.accentColor.opacity(0.18)))
-            }
-            let lineWidth: CGFloat = filled ? 1.5 : 1.25
+            var area = line
+            area.addLine(to: CGPoint(x: size.width, y: size.height))
+            area.addLine(to: CGPoint(x: 0, y: size.height))
+            area.closeSubpath()
+            context.fill(area, with: .color(Color.accentColor.opacity(0.18)))
             context.stroke(
                 line,
                 with: .color(Color.accentColor),
-                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
             )
         }
-        .frame(height: height)
+        .frame(height: 26)
         .accessibilityHidden(true)
     }
 }
@@ -519,8 +579,8 @@ private struct LevelSparkline: View {
             networkUp: 84_000,
             networkDownHistory: [400_000, 900_000, 1_250_000, 700_000],
             networkUpHistory: [40_000, 80_000, 84_000, 50_000],
+            disk: DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000),
             battery: BatteryStatus(percent: 86, source: .charging, minutesRemaining: 75),
-            batteryHistory: [80, 82, 84, 86],
             planName: "Pro+",
             rows: [
                 UsageRow(id: "grok", title: "Grok Bot", detail: "", percent: 12.7, resetsAt: Date().addingTimeInterval(3 * 86_400)),
@@ -529,6 +589,27 @@ private struct LevelSparkline: View {
             ],
             isRefreshing: false,
             sessionLabel: "Cursor",
+            hasPastedToken: false
+        ),
+        actions: PanelActions(refresh: {}, quit: {}, openCursor: {}, openDashboard: {}, openActivityMonitor: {}, saveToken: { _ in nil }, forgetToken: {})
+    )
+}
+
+#Preview("Desktop") {
+    UsagePanelView(
+        content: PanelContent(
+            cpuPercent: 8,
+            cpuHistory: [4, 6, 5, 8],
+            memoryUsed: 6_080_000_000,
+            memoryTotal: 8_000_000_000,
+            memoryHistory: [70, 72, 74, 76],
+            networkDown: 1_300,
+            networkUp: 984,
+            networkDownHistory: [100, 1_300, 400, 200],
+            networkUpHistory: [80, 984, 100, 90],
+            disk: DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000),
+            rows: [],
+            isRefreshing: false,
             hasPastedToken: false
         ),
         actions: PanelActions(refresh: {}, quit: {}, openCursor: {}, openDashboard: {}, openActivityMonitor: {}, saveToken: { _ in nil }, forgetToken: {})

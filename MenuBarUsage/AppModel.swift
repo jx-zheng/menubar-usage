@@ -12,8 +12,8 @@ struct PanelContent: Equatable {
     var networkUp: Double?
     var networkDownHistory: [Double] = []
     var networkUpHistory: [Double] = []
+    var disk: DiskStatus?
     var battery: BatteryStatus?
-    var batteryHistory: [Double] = []
     var planName: String?
     var note: String?
     var rows: [UsageRow] = []
@@ -45,8 +45,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var networkUp: Double?
     @Published private(set) var networkDownHistory: [Double] = []
     @Published private(set) var networkUpHistory: [Double] = []
+    @Published private(set) var disk: DiskStatus?
     @Published private(set) var battery: BatteryStatus?
-    @Published private(set) var batteryHistory: [Double] = []
     @Published private(set) var presentation = UsagePresentation(planName: nil, note: nil, rows: [])
     @Published private(set) var authMessage: String?
     @Published private(set) var statusMessage: String?
@@ -90,6 +90,8 @@ final class AppModel: ObservableObject {
     /// Bumped when the signed-in user changes so an in-flight fetch cannot restore the old plan.
     private var planEpoch = 0
     private var lastBatterySample = Date.distantPast
+    private var lastDiskSample = Date.distantPast
+    private var diskReadInFlight = false
     private var notificationTokens: [NSObjectProtocol] = []
     private var resumeContinuations: [CheckedContinuation<Void, Never>] = []
     private var sleepers: [SleepBox] = []
@@ -102,8 +104,8 @@ final class AppModel: ObservableObject {
     private var networkUpValue: Double?
     private var networkDownSamples: [Double] = []
     private var networkUpSamples: [Double] = []
+    private var diskValue: DiskStatus?
     private var batteryValue: BatteryStatus?
-    private var batterySamples: [Double] = []
     private var renderedStatusParts = StatusItemParts(cpuPercent: nil, memoryPercent: nil)
 
     /// Rounded CPU and memory strings currently drawn in the status item.
@@ -120,8 +122,8 @@ final class AppModel: ObservableObject {
             networkUp: networkUp,
             networkDownHistory: networkDownHistory,
             networkUpHistory: networkUpHistory,
+            disk: disk,
             battery: battery,
-            batteryHistory: batteryHistory,
             planName: presentation.planName,
             note: presentation.note,
             rows: presentation.rows,
@@ -165,6 +167,7 @@ final class AppModel: ObservableObject {
                 }
                 self.noteMemoryReading(SystemSampler.memory())
                 self.recordNetwork()
+                self.recordDisk()
                 self.recordBattery(force: false)
                 let interval = UsageSchedule.systemInterval(panelOpen: self.panelVisible, firstSample: first)
                 first = false
@@ -214,6 +217,10 @@ final class AppModel: ObservableObject {
         panelVisible = true
         mirrorMachineMetrics()
         guard !wasOpen else { return }
+        // Capacity is sampled slowly. Opening the panel takes a fresh reading.
+        if started {
+            recordDisk(force: true)
+        }
         // Consent can keep an older `updatedAt` from the last success.
         // A blob that already failed to open, and a rejected paste, wait for the cadence.
         if sealedSessionNeedsRefresh {
@@ -522,18 +529,45 @@ final class AppModel: ObservableObject {
         networkMark = (totals.bytesIn, totals.bytesOut, now)
     }
 
+    /// Finder's free-space figure is uncached, so this hops off the main thread.
+    /// A missed read keeps the last good sample; the disk side stays hidden until one arrives.
+    private func recordDisk(force: Bool = false) {
+        let now = Date()
+        if !force, now.timeIntervalSince(lastDiskSample) < UsageSchedule.diskInterval { return }
+        guard !diskReadInFlight else { return }
+        lastDiskSample = now
+        diskReadInFlight = true
+        Task { @MainActor [weak self] in
+            let reading = await Task.detached(priority: .utility) {
+                DiskSampler.read()
+            }.value
+            self?.applyDiskReading(reading)
+        }
+    }
+
+    private func applyDiskReading(_ reading: DiskStatus?) {
+        diskReadInFlight = false
+        guard let reading else { return }
+        noteDiskReading(reading)
+    }
+
+    func noteDiskReading(_ reading: DiskStatus) {
+        guard diskValue != reading else { return }
+        diskValue = reading
+        mirrorMachineMetrics()
+    }
+
     private func recordBattery(force: Bool) {
         let now = Date()
         let due = now.timeIntervalSince(lastBatterySample) >= UsageSchedule.batteryInterval
         if !force, !due { return }
         guard let reading = BatterySampler.read() else {
-            let hadBattery = batteryValue != nil || !batterySamples.isEmpty
+            let hadBattery = batteryValue != nil
             guard hadBattery else {
                 if due { lastBatterySample = now }
                 return
             }
             batteryValue = nil
-            batterySamples = []
             lastBatterySample = now
             mirrorMachineMetrics()
             return
@@ -542,7 +576,6 @@ final class AppModel: ObservableObject {
         if batteryValue == reading, !due { return }
         lastBatterySample = now
         batteryValue = reading
-        SampleHistory.append(reading.percent, to: &batterySamples, limit: historyLimit)
         mirrorMachineMetrics()
     }
 
@@ -560,8 +593,8 @@ final class AppModel: ObservableObject {
         if networkUp != networkUpValue { networkUp = networkUpValue }
         if networkDownHistory != networkDownSamples { networkDownHistory = networkDownSamples }
         if networkUpHistory != networkUpSamples { networkUpHistory = networkUpSamples }
+        if disk != diskValue { disk = diskValue }
         if battery != batteryValue { battery = batteryValue }
-        if batteryHistory != batterySamples { batteryHistory = batterySamples }
         // Keep publishing through the second tick so the first CPU percent is in the panel.
         if cpuValue != nil {
             seededMachineMetrics = true

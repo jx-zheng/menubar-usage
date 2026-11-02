@@ -225,6 +225,44 @@ enum PrimaryInterface {
     }
 }
 
+struct DiskStatus: Equatable, Sendable {
+    var freeBytes: UInt64
+    var totalBytes: UInt64
+
+    var usedBytes: UInt64 {
+        totalBytes > freeBytes ? totalBytes - freeBytes : 0
+    }
+
+    /// Used share of the volume, on the same 0–100 scale as memory.
+    /// `DiskSampler` only builds a value when `totalBytes` is positive.
+    var usedPercent: Double {
+        Double(usedBytes) / Double(totalBytes) * 100
+    }
+
+    var freeCaption: String {
+        "\(ByteText.fileString(freeBytes)) free of \(ByteText.fileString(totalBytes))"
+    }
+}
+
+/// Startup volume (`/`), which is the internal disk on a Mac that boots from it.
+///
+/// `volumeAvailableCapacityForImportantUsage` is the free space Finder shows,
+/// including space it can purge. That value is not cached, so the caller reads
+/// it off the main thread and only on the slow cadence.
+enum DiskSampler {
+    static func read() -> DiskStatus? {
+        let volume = URL(fileURLWithPath: "/")
+        let keys: Set<URLResourceKey> = [
+            .volumeTotalCapacityKey,
+            .volumeAvailableCapacityForImportantUsageKey
+        ]
+        guard let values = try? volume.resourceValues(forKeys: keys),
+              let total = values.volumeTotalCapacity, total > 0,
+              let free = values.volumeAvailableCapacityForImportantUsage, free >= 0 else { return nil }
+        return DiskStatus(freeBytes: UInt64(free), totalBytes: UInt64(total))
+    }
+}
+
 enum BatterySampler {
     private static let powerCallback: IOPowerSourceCallbackType = { _ in
         BatterySampler.deliverChange()
