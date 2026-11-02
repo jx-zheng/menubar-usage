@@ -177,10 +177,8 @@ struct UsagePanelView: View {
                 title: "Disk",
                 value: UsageFormatting.menuPercent(disk.usedPercent)
             )
-            Text(disk.freeCaption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            metricCaption(disk.freeCaption)
+            metricCaption(disk.usedCaption, fine: true)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(diskAccessibility(disk))
@@ -193,19 +191,21 @@ struct UsagePanelView: View {
                 title: "Battery",
                 value: UsageFormatting.menuPercent(battery.percent)
             )
-            Text(battery.source.label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            metricCaption(battery.sourceCaption)
             if let caption = battery.timeCaption {
-                Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                metricCaption(caption, fine: true)
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(batteryAccessibility(battery))
+    }
+
+    private func metricCaption(_ text: String, fine: Bool = false) -> some View {
+        Text(text)
+            .font(fine ? .caption2 : .caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
     }
 
     private func metricHalfHeader(symbol: String, title: String, value: String) -> some View {
@@ -224,11 +224,12 @@ struct UsagePanelView: View {
     }
 
     private func diskAccessibility(_ disk: DiskStatus) -> String {
-        ["Disk", UsageFormatting.menuPercent(disk.usedPercent), disk.freeCaption].joined(separator: ", ")
+        ["Disk", UsageFormatting.menuPercent(disk.usedPercent), disk.freeCaption, disk.usedCaption]
+            .joined(separator: ", ")
     }
 
     private func batteryAccessibility(_ battery: BatteryStatus) -> String {
-        var parts = ["Battery", UsageFormatting.menuPercent(battery.percent), battery.source.label]
+        var parts = ["Battery", UsageFormatting.menuPercent(battery.percent), battery.sourceCaption]
         if let caption = battery.timeCaption {
             parts.append(caption)
         }
@@ -580,7 +581,7 @@ private struct LevelSparkline: View {
             networkDownHistory: [400_000, 900_000, 1_250_000, 700_000],
             networkUpHistory: [40_000, 80_000, 84_000, 50_000],
             disk: DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000),
-            battery: BatteryStatus(percent: 86, source: .charging, minutesRemaining: 75),
+            battery: BatteryStatus(percent: 86, source: .charging, minutesRemaining: 75, chargeWatts: 45),
             planName: "Pro+",
             rows: [
                 UsageRow(id: "grok", title: "Grok Bot", detail: "", percent: 12.7, resetsAt: Date().addingTimeInterval(3 * 86_400)),

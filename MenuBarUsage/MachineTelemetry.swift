@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import SystemConfiguration
+import IOKit
 import IOKit.ps
 
 struct LinkReading: Equatable {
@@ -75,8 +76,19 @@ enum BatterySource: Equatable {
 struct BatteryStatus: Equatable {
     var percent: Double
     var source: BatterySource
-    var minutesRemaining: Int?
+    var minutesRemaining: Int? = nil
+    /// Instantaneous charge power in watts, only while charging and only when a reading exists.
+    var chargeWatts: Double? = nil
 
+    /// First caption under the percent: source, with watts while charging when known.
+    var sourceCaption: String {
+        guard source == .charging, let chargeWatts, let watts = ChargeWatts.text(chargeWatts) else {
+            return source.label
+        }
+        return "Charging · \(watts)"
+    }
+
+    /// Second caption. Time remaining only when the system reported it.
     var timeCaption: String? {
         guard let minutesRemaining, minutesRemaining > 0 else { return nil }
         let duration = Self.duration(minutesRemaining)
@@ -96,17 +108,48 @@ struct BatteryStatus: Equatable {
     }
 }
 
+/// One decimal, matching `UsageFormatting.percent`. A trailing .0 is omitted.
+/// About 0 W, and anything above a laptop charge rate, is left unset.
+private enum ChargeWatts {
+    static let maximum = 300.0
+    private static let posix = Locale(identifier: "en_US_POSIX")
+
+    static func displayWatts(_ watts: Double) -> Double? {
+        guard watts > 0, watts <= maximum else { return nil }
+        let tenths = (watts * 10).rounded() / 10
+        guard tenths > 0 else { return nil }
+        return tenths
+    }
+
+    static func text(_ watts: Double) -> String? {
+        guard let tenths = displayWatts(watts) else { return nil }
+        if abs(tenths - tenths.rounded()) < 0.001 {
+            return "\(Int(tenths.rounded())) W"
+        }
+        return String(format: "%.1f", locale: posix, tenths) + " W"
+    }
+}
+
+struct ChargePowerReading: Equatable {
+    var voltageMillivolts: Double? = nil
+    var currentMilliamps: Double? = nil
+    /// `AdapterDetails.Watts`: negotiated adapter capability, not instantaneous draw.
+    var adapterWatts: Double? = nil
+
+    static let empty = ChargePowerReading()
+}
+
 enum BatteryStatusParser {
-    static func choose(_ descriptions: [[String: Any]]) -> BatteryStatus? {
+    static func choose(_ descriptions: [[String: Any]], power: ChargePowerReading = .empty) -> BatteryStatus? {
         let parsed: [(BatteryStatus, Bool)] = descriptions.compactMap { description in
-            guard let status = parse(description) else { return nil }
+            guard let status = parse(description, power: power) else { return nil }
             let transport = description[kIOPSTransportTypeKey as String] as? String
             return (status, transport == (kIOPSInternalType as String))
         }
         return parsed.first(where: \.1)?.0 ?? parsed.first?.0
     }
 
-    static func parse(_ description: [String: Any]) -> BatteryStatus? {
+    static func parse(_ description: [String: Any], power: ChargePowerReading = .empty) -> BatteryStatus? {
         if boolValue(description[kIOPSIsPresentKey as String]) == false { return nil }
         guard let current = number(description[kIOPSCurrentCapacityKey as String]),
               let maximum = number(description[kIOPSMaxCapacityKey as String]),
@@ -124,7 +167,64 @@ enum BatteryStatusParser {
         } else {
             minutes = nil
         }
-        return BatteryStatus(percent: percent, source: source, minutesRemaining: minutes)
+        let watts = charging ? chargeWatts(iops: description, registry: power) : nil
+        return BatteryStatus(
+            percent: percent,
+            source: source,
+            minutesRemaining: minutes,
+            chargeWatts: watts
+        )
+    }
+
+    /// `Voltage` (mV) and `InstantAmperage` (mA) from an AppleSmartBattery snapshot.
+    static func powerReading(registryProperties: [String: Any]) -> ChargePowerReading {
+        ChargePowerReading(
+            voltageMillivolts: positive(registryProperties["Voltage"]),
+            currentMilliamps: sample(registryProperties["InstantAmperage"]),
+            adapterWatts: adapterWatts(registryProperties["AdapterDetails"])
+        )
+    }
+
+    /// Instantaneous charge power is voltage (mV) × current (mA) / 1_000_000
+    /// when current is positive.
+    ///
+    /// Current is the IOPS `Current` key when that key yields a finite sample
+    /// (0 included); otherwise AppleSmartBattery `InstantAmperage`. Voltage is
+    /// IOPS `Voltage` when it is positive; otherwise AppleSmartBattery `Voltage`.
+    /// `AdapterDetails.Watts` is the negotiated adapter tier and is used only
+    /// when voltage or current is missing, so the product cannot be formed.
+    /// A present current that is not positive, or a formed product that is
+    /// about 0 W or above a laptop charge rate, stays unset and the caption
+    /// is `Charging` with no number.
+    private static func chargeWatts(iops: [String: Any], registry: ChargePowerReading) -> Double? {
+        let voltage = positive(iops[kIOPSVoltageKey as String]) ?? registry.voltageMillivolts
+        let current = sample(iops[kIOPSCurrentKey as String]) ?? registry.currentMilliamps
+        if let current {
+            if current <= 0 { return nil }
+            guard let voltage else {
+                return registry.adapterWatts.flatMap(ChargeWatts.displayWatts)
+            }
+            return ChargeWatts.displayWatts(voltage * current / 1_000_000)
+        }
+        return registry.adapterWatts.flatMap(ChargeWatts.displayWatts)
+    }
+
+    /// Finite reading, including 0. Nil when the value is missing or not finite,
+    /// so a present 0 still wins over a fallback (`0 ?? other` stays 0).
+    private static func sample(_ value: Any?) -> Double? {
+        guard let number = number(value), number.isFinite else { return nil }
+        return number
+    }
+
+    private static func positive(_ value: Any?) -> Double? {
+        sample(value).flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    private static func adapterWatts(_ value: Any?) -> Double? {
+        // Swift dictionaries are not covariant, so a `[String: Int]` payload
+        // does not cast to `[String: Any]`. NSDictionary bridging covers both.
+        guard let details = value as? NSDictionary else { return nil }
+        return positive(details["Watts"])
     }
 
     private static func minutesRemaining(_ value: Any?) -> Int? {
@@ -141,7 +241,7 @@ enum BatteryStatusParser {
         }
     }
 
-    private static func boolValue(_ value: Any?) -> Bool? {
+    fileprivate static func boolValue(_ value: Any?) -> Bool? {
         switch value {
         case let value as Bool: return value
         case let value as Int: return value != 0
@@ -239,16 +339,23 @@ struct DiskStatus: Equatable, Sendable {
         Double(usedBytes) / Double(totalBytes) * 100
     }
 
+    /// Free space only, in the Finder units `ByteText.fileString` already uses.
     var freeCaption: String {
-        "\(ByteText.fileString(freeBytes)) free of \(ByteText.fileString(totalBytes))"
+        "\(ByteText.fileString(freeBytes)) free"
+    }
+
+    /// Used space against the volume size.
+    var usedCaption: String {
+        "\(ByteText.fileString(usedBytes)) used of \(ByteText.fileString(totalBytes))"
     }
 }
 
 /// Startup volume (`/`), which is the internal disk on a Mac that boots from it.
 ///
-/// `volumeAvailableCapacityForImportantUsage` is the free space Finder shows,
-/// including space it can purge. That value is not cached, so the caller reads
-/// it off the main thread and only on the slow cadence.
+/// Free space is `volumeAvailableCapacityForImportantUsage` only — the figure
+/// Finder shows, including space it can purge. That value is not cached, so
+/// the caller reads it off the main thread and only on the slow cadence.
+/// A nil result leaves the last good sample.
 enum DiskSampler {
     static func read() -> DiskStatus? {
         let volume = URL(fileURLWithPath: "/")
@@ -260,6 +367,44 @@ enum DiskSampler {
               let total = values.volumeTotalCapacity, total > 0,
               let free = values.volumeAvailableCapacityForImportantUsage, free >= 0 else { return nil }
         return DiskStatus(freeBytes: UInt64(free), totalBytes: UInt64(total))
+    }
+}
+
+/// AppleSmartBattery keys for charge watts, read while any source is charging.
+/// `Voltage` is mV. `InstantAmperage` is mA. `AdapterDetails` is the negotiated adapter.
+enum SmartBatteryPower {
+    private static let keys = [
+        "Voltage",
+        "InstantAmperage",
+        "AdapterDetails"
+    ]
+
+    static func read() -> ChargePowerReading {
+        let service = IOServiceGetMatchingService(
+            kIOMainPortDefault,
+            IOServiceMatching("AppleSmartBattery")
+        )
+        guard service != IO_OBJECT_NULL else { return .empty }
+        defer { IOObjectRelease(service) }
+
+        var properties: [String: Any] = [:]
+        for key in keys {
+            if let value = copyProperty(service, key: key) {
+                properties[key] = value
+            }
+        }
+        return BatteryStatusParser.powerReading(registryProperties: properties)
+    }
+
+    /// One registry value. The Create call returns +1, so the result is consumed here.
+    private static func copyProperty(_ service: io_registry_entry_t, key: String) -> Any? {
+        guard let unmanaged = IORegistryEntryCreateCFProperty(
+            service,
+            key as CFString,
+            kCFAllocatorDefault,
+            0
+        ) else { return nil }
+        return unmanaged.takeRetainedValue()
     }
 }
 
@@ -296,7 +441,11 @@ enum BatterySampler {
             }
             return description as? [String: Any]
         }
-        return BatteryStatusParser.choose(descriptions)
+        let charging = descriptions.contains {
+            BatteryStatusParser.boolValue($0[kIOPSIsChargingKey as String]) == true
+        }
+        let power = charging ? SmartBatteryPower.read() : .empty
+        return BatteryStatusParser.choose(descriptions, power: power)
     }
 }
 

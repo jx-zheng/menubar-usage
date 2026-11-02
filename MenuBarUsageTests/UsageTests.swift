@@ -643,6 +643,8 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertEqual(status?.percent, 86)
         XCTAssertEqual(status?.source, .charging)
         XCTAssertEqual(status?.minutesRemaining, 75)
+        XCTAssertNil(status?.chargeWatts)
+        XCTAssertEqual(status?.sourceCaption, "Charging")
         XCTAssertEqual(status?.timeCaption, "1 hr 15 min to full")
 
         let draining = BatteryStatusParser.parse([
@@ -653,6 +655,8 @@ final class MachineTelemetryTests: XCTestCase {
             "Time to Empty": 45
         ])
         XCTAssertEqual(draining?.source, .battery)
+        XCTAssertNil(draining?.chargeWatts)
+        XCTAssertEqual(draining?.sourceCaption, "On battery")
         XCTAssertEqual(draining?.timeCaption, "45 min left")
 
         let calculating = BatteryStatusParser.parse([
@@ -695,18 +699,37 @@ final class MachineTelemetryTests: XCTestCase {
         ])
         XCTAssertEqual(chosen?.percent, 90)
         XCTAssertEqual(chosen?.source, .powerAdapter)
+        XCTAssertEqual(chosen?.sourceCaption, "AC power")
         XCTAssertNil(chosen?.timeCaption)
+        XCTAssertNil(chosen?.chargeWatts)
     }
 
     func testDiskUsedPercentAndCaption() {
         let disk = DiskStatus(freeBytes: 148_000_000_000, totalBytes: 460_000_000_000)
         XCTAssertEqual(disk.usedBytes, 312_000_000_000)
         XCTAssertEqual(disk.usedPercent, 312.0 / 460.0 * 100, accuracy: 0.001)
+        XCTAssertEqual(disk.freeCaption, "\(ByteText.fileString(disk.freeBytes)) free")
         XCTAssertEqual(
-            disk.freeCaption,
-            "\(ByteText.fileString(disk.freeBytes)) free of \(ByteText.fileString(disk.totalBytes))"
+            disk.usedCaption,
+            "\(ByteText.fileString(disk.usedBytes)) used of \(ByteText.fileString(disk.totalBytes))"
         )
+        XCTAssertFalse(disk.freeCaption.contains("used"))
+        XCTAssertFalse(disk.freeCaption.contains("free of"))
         XCTAssertEqual(UsageFormatting.menuPercent(disk.usedPercent), "68%")
+    }
+
+    func testDiskCaptionsUseFinderUnits() {
+        let free = 99_320_000_000 as UInt64
+        let total = 245_050_000_000 as UInt64
+        let disk = DiskStatus(freeBytes: free, totalBytes: total)
+        XCTAssertEqual(disk.usedBytes, 145_730_000_000)
+        XCTAssertEqual(disk.freeCaption, "\(ByteText.fileString(free)) free")
+        XCTAssertEqual(
+            disk.usedCaption,
+            "\(ByteText.fileString(disk.usedBytes)) used of \(ByteText.fileString(total))"
+        )
+        XCTAssertTrue(disk.freeCaption.hasSuffix(" free"))
+        XCTAssertTrue(disk.usedCaption.contains(" used of "))
     }
 
     func testStartupVolumeCanBeRead() {
@@ -715,7 +738,217 @@ final class MachineTelemetryTests: XCTestCase {
         guard let disk else { return }
         XCTAssertGreaterThan(disk.totalBytes, 0)
         XCTAssertGreaterThanOrEqual(disk.usedPercent, 0)
-        XCTAssertFalse(disk.freeCaption.isEmpty)
+        XCTAssertTrue(disk.freeCaption.hasSuffix(" free"))
+        XCTAssertTrue(disk.usedCaption.contains(" used of "))
+        XCTAssertFalse(disk.freeCaption.contains("free of"))
+    }
+
+    func testChargingCaptionUsesVoltageTimesCurrent() {
+        // 5338 mA is an observed IOPS `Current` while charging. Voltage is mV.
+        // 12_000 mV × 5_338 mA / 1e6 = 64.056 W → 64.1 W.
+        let status = BatteryStatusParser.parse(charging(current: 5_338), power: ChargePowerReading(
+            voltageMillivolts: 12_000,
+            currentMilliamps: 100,
+            adapterWatts: 45
+        ))
+        XCTAssertEqual(status?.chargeWatts ?? -1, 64.1, accuracy: 0.001)
+        XCTAssertEqual(status?.sourceCaption, "Charging · 64.1 W")
+        XCTAssertEqual(status?.timeCaption, "40 min to full")
+
+        // A negative current is present, so the product is not a charge and the adapter tier stays unused.
+        let negativeCurrent = BatteryStatusParser.parse(charging(current: -5_338), power: ChargePowerReading(
+            voltageMillivolts: 12_000,
+            adapterWatts: 45
+        ))
+        XCTAssertNil(negativeCurrent?.chargeWatts)
+        XCTAssertEqual(negativeCurrent?.sourceCaption, "Charging")
+
+        let fromIOPS = BatteryStatusParser.parse(
+            charging(extra: ["Voltage": 11_000, "Current": 4_000]),
+            power: ChargePowerReading(voltageMillivolts: 5_000, currentMilliamps: 9_000, adapterWatts: 96)
+        )
+        XCTAssertEqual(fromIOPS?.chargeWatts, 44)
+        XCTAssertEqual(fromIOPS?.sourceCaption, "Charging · 44 W")
+
+        let whole = BatteryStatus(percent: 56, source: .charging, chargeWatts: 45)
+        XCTAssertEqual(whole.sourceCaption, "Charging · 45 W")
+        let nearTen = BatteryStatus(percent: 90, source: .charging, chargeWatts: 9.96)
+        XCTAssertEqual(nearTen.sourceCaption, "Charging · 10 W")
+        let trickle = BatteryStatus(percent: 99, source: .charging, chargeWatts: 4.24)
+        XCTAssertEqual(trickle.sourceCaption, "Charging · 4.2 W")
+    }
+
+    func testChargingWattsFallBackWithoutInventingANumber() {
+        let adapterOnly = BatteryStatusParser.parse(charging(), power: ChargePowerReading(adapterWatts: 45))
+        XCTAssertEqual(adapterOnly?.chargeWatts, 45)
+        XCTAssertEqual(adapterOnly?.sourceCaption, "Charging · 45 W")
+        XCTAssertEqual(adapterOnly?.timeCaption, "40 min to full")
+
+        let missing = BatteryStatusParser.parse(charging())
+        XCTAssertNil(missing?.chargeWatts)
+        XCTAssertEqual(missing?.sourceCaption, "Charging")
+
+        // 1 mA at 12 V is 0.012 W, which rounds away. The 45 W adapter tier stays unused.
+        let trickle = BatteryStatusParser.parse(charging(), power: ChargePowerReading(
+            voltageMillivolts: 12_000,
+            currentMilliamps: 1,
+            adapterWatts: 45
+        ))
+        XCTAssertNil(trickle?.chargeWatts)
+        XCTAssertEqual(trickle?.sourceCaption, "Charging")
+
+        let measuredZero = BatteryStatusParser.parse(charging(current: 0), power: ChargePowerReading(
+            voltageMillivolts: 12_000,
+            adapterWatts: 45
+        ))
+        XCTAssertNil(measuredZero?.chargeWatts)
+        XCTAssertEqual(measuredZero?.sourceCaption, "Charging")
+
+        // 5_000 V × 5 A forms a product above a laptop charge rate. The adapter tier stays unused.
+        let implausible = BatteryStatusParser.parse(charging(), power: ChargePowerReading(
+            voltageMillivolts: 5_000_000,
+            currentMilliamps: 5_000,
+            adapterWatts: 45
+        ))
+        XCTAssertNil(implausible?.chargeWatts)
+        XCTAssertEqual(implausible?.sourceCaption, "Charging")
+
+        let absurdAdapter = BatteryStatusParser.parse(charging(), power: ChargePowerReading(adapterWatts: 5_000))
+        XCTAssertNil(absurdAdapter?.chargeWatts)
+        XCTAssertEqual(absurdAdapter?.sourceCaption, "Charging")
+
+        // IOPS voltage and current form the product, so the adapter tier stays unused.
+        let usbMeasured = BatteryStatusParser.parse([
+            "Current Capacity": 80,
+            "Max Capacity": 100,
+            "Is Charging": true,
+            "Transport Type": "USB",
+            "Voltage": 5_000,
+            "Current": 2_000
+        ], power: ChargePowerReading(adapterWatts: 96))
+        XCTAssertEqual(usbMeasured?.sourceCaption, "Charging · 10 W")
+    }
+
+    func testOnBatteryAndACCaptionsOmitUnknownTime() {
+        let draining = BatteryStatusParser.parse([
+            "Current Capacity": 40,
+            "Max Capacity": 100,
+            "Is Charging": false,
+            "Power Source State": "Battery Power",
+            "Time to Empty": 45,
+            "Transport Type": "Internal"
+        ], power: ChargePowerReading(voltageMillivolts: 12_000, currentMilliamps: -2_000, adapterWatts: 45))
+        XCTAssertEqual(draining?.sourceCaption, "On battery")
+        XCTAssertEqual(draining?.timeCaption, "45 min left")
+        XCTAssertNil(draining?.chargeWatts)
+
+        let noEstimate = BatteryStatusParser.parse([
+            "Current Capacity": 40,
+            "Max Capacity": 100,
+            "Power Source State": "Battery Power",
+            "Time to Empty": -1,
+            "Transport Type": "Internal"
+        ])
+        XCTAssertEqual(noEstimate?.sourceCaption, "On battery")
+        XCTAssertNil(noEstimate?.timeCaption)
+
+        let ac = BatteryStatusParser.parse([
+            "Current Capacity": 100,
+            "Max Capacity": 100,
+            "Is Charging": false,
+            "Power Source State": "AC Power",
+            "Transport Type": "Internal"
+        ], power: ChargePowerReading(voltageMillivolts: 12_600, currentMilliamps: 0, adapterWatts: 45))
+        XCTAssertEqual(ac?.sourceCaption, "AC power")
+        XCTAssertNil(ac?.minutesRemaining)
+        XCTAssertNil(ac?.timeCaption)
+        XCTAssertNil(ac?.chargeWatts)
+    }
+
+    func testSmartBatteryRegistryFeedsChargePower() {
+        let preferred = BatteryStatusParser.powerReading(registryProperties: [
+            "AppleRawBatteryVoltage": 11_000,
+            "Voltage": 12_600,
+            "Amperage": 1_500,
+            "InstantAmperage": 2_500,
+            "AdapterDetails": ["Watts": 96]
+        ])
+        XCTAssertEqual(preferred.voltageMillivolts, 12_600)
+        XCTAssertEqual(preferred.currentMilliamps, 2_500)
+        XCTAssertEqual(preferred.adapterWatts, 96)
+
+        let ignoredFallbacks = BatteryStatusParser.powerReading(registryProperties: [
+            "AppleRawBatteryVoltage": 11_500,
+            "Amperage": 2_000,
+            "AdapterDetails": NSDictionary(dictionary: ["Watts": 45])
+        ])
+        XCTAssertNil(ignoredFallbacks.voltageMillivolts)
+        XCTAssertNil(ignoredFallbacks.currentMilliamps)
+        XCTAssertEqual(ignoredFallbacks.adapterWatts, 45)
+
+        let instantZero = BatteryStatusParser.powerReading(registryProperties: [
+            "Voltage": 11_500,
+            "InstantAmperage": 0,
+            "Amperage": 2_000
+        ])
+        XCTAssertEqual(instantZero.voltageMillivolts, 11_500)
+        XCTAssertEqual(instantZero.currentMilliamps, 0)
+
+        // 12.6 V × 2.5 A = 31.5 W from InstantAmperage. Adapter watts stay unused.
+        let instant = BatteryStatusParser.powerReading(registryProperties: [
+            "Voltage": 12_600,
+            "InstantAmperage": 2_500,
+            "AdapterDetails": NSDictionary(dictionary: ["Watts": 45])
+        ])
+        let status = BatteryStatusParser.parse(charging(), power: instant)
+        XCTAssertEqual(status?.chargeWatts ?? -1, 31.5, accuracy: 0.001)
+        XCTAssertEqual(status?.sourceCaption, "Charging · 31.5 W")
+
+        // Amperage is not used. Current is missing, so the adapter tier fills in.
+        let amperageOnly = BatteryStatusParser.parse(charging(), power: BatteryStatusParser.powerReading(registryProperties: [
+            "Voltage": 12_600,
+            "Amperage": 2_500,
+            "AdapterDetails": ["Watts": 45]
+        ]))
+        XCTAssertEqual(amperageOnly?.sourceCaption, "Charging · 45 W")
+
+        let iopsCurrent = BatteryStatusParser.parse(charging(current: 2_000), power: preferred)
+        // IOPS current wins over InstantAmperage. 12_600 mV × 2_000 mA = 25.2 W.
+        XCTAssertEqual(iopsCurrent?.sourceCaption, "Charging · 25.2 W")
+
+        let chosen = BatteryStatusParser.choose([
+            [
+                "Current Capacity": 10,
+                "Max Capacity": 100,
+                "Is Charging": true,
+                "Transport Type": "USB",
+                "Voltage": 5_000,
+                "Current": 3_000
+            ],
+            charging()
+        ], power: ChargePowerReading(voltageMillivolts: 12_000, currentMilliamps: 5_338, adapterWatts: 45))
+        XCTAssertEqual(chosen?.percent ?? -1, 56, accuracy: 0.001)
+        XCTAssertEqual(chosen?.sourceCaption, "Charging · 64.1 W")
+        XCTAssertEqual(chosen?.timeCaption, "40 min to full")
+    }
+
+    private func charging(current: Any? = nil, extra: [String: Any] = [:]) -> [String: Any] {
+        var description: [String: Any] = [
+            "Current Capacity": 56,
+            "Max Capacity": 100,
+            "Is Charging": true,
+            "Power Source State": "AC Power",
+            "Time to Full Charge": 40,
+            "Transport Type": "Internal",
+            "Is Present": true
+        ]
+        if let current {
+            description["Current"] = current
+        }
+        for (key, value) in extra {
+            description[key] = value
+        }
+        return description
     }
 
     func testHistoryKeepsTheNewestSamples() {
