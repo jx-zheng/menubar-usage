@@ -934,7 +934,7 @@ final class MachineTelemetryTests: XCTestCase {
             ],
             charging()
         ], power: ChargePowerReading(voltageMillivolts: 12_000, currentMilliamps: 5_338, adapterWatts: 45))
-        XCTAssertEqual(chosen?.percent, 56)
+        XCTAssertEqual(chosen?.percent ?? -1, 56, accuracy: 0.001)
         XCTAssertEqual(chosen?.sourceCaption, "Charging · 64.1 W")
         XCTAssertEqual(chosen?.timeCaption, "40 min to full")
     }
