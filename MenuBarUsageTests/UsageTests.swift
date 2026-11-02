@@ -755,10 +755,13 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertEqual(status?.sourceCaption, "Charging · 64.1 W")
         XCTAssertEqual(status?.timeCaption, "40 min to full")
 
+        // A negative current is present, so the product is not a charge and the adapter tier stays unused.
         let negativeCurrent = BatteryStatusParser.parse(charging(current: -5_338), power: ChargePowerReading(
-            voltageMillivolts: 12_000
+            voltageMillivolts: 12_000,
+            adapterWatts: 45
         ))
-        XCTAssertEqual(negativeCurrent?.sourceCaption, "Charging · 64.1 W")
+        XCTAssertNil(negativeCurrent?.chargeWatts)
+        XCTAssertEqual(negativeCurrent?.sourceCaption, "Charging")
 
         let fromIOPS = BatteryStatusParser.parse(
             charging(extra: ["Voltage": 11_000, "Current": 4_000]),
@@ -814,16 +817,7 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertNil(absurdAdapter?.chargeWatts)
         XCTAssertEqual(absurdAdapter?.sourceCaption, "Charging")
 
-        let usb = BatteryStatusParser.parse([
-            "Current Capacity": 80,
-            "Max Capacity": 100,
-            "Is Charging": true,
-            "Transport Type": "USB"
-        ], power: ChargePowerReading(voltageMillivolts: 12_000, currentMilliamps: 5_000, adapterWatts: 45))
-        XCTAssertNil(usb?.chargeWatts)
-        XCTAssertEqual(usb?.sourceCaption, "Charging")
-
-        // A non-internal source can still use its own IOPS voltage and current.
+        // IOPS voltage and current form the product, so the adapter tier stays unused.
         let usbMeasured = BatteryStatusParser.parse([
             "Current Capacity": 80,
             "Max Capacity": 100,
@@ -883,27 +877,40 @@ final class MachineTelemetryTests: XCTestCase {
         XCTAssertEqual(preferred.currentMilliamps, 2_500)
         XCTAssertEqual(preferred.adapterWatts, 96)
 
-        let rawVoltage = BatteryStatusParser.powerReading(registryProperties: [
+        let ignoredFallbacks = BatteryStatusParser.powerReading(registryProperties: [
             "AppleRawBatteryVoltage": 11_500,
+            "Amperage": 2_000,
+            "AdapterDetails": NSDictionary(dictionary: ["Watts": 45])
+        ])
+        XCTAssertNil(ignoredFallbacks.voltageMillivolts)
+        XCTAssertNil(ignoredFallbacks.currentMilliamps)
+        XCTAssertEqual(ignoredFallbacks.adapterWatts, 45)
+
+        let instantZero = BatteryStatusParser.powerReading(registryProperties: [
+            "Voltage": 11_500,
             "InstantAmperage": 0,
             "Amperage": 2_000
         ])
-        XCTAssertEqual(rawVoltage.voltageMillivolts, 11_500)
-        XCTAssertEqual(rawVoltage.currentMilliamps, 0)
+        XCTAssertEqual(instantZero.voltageMillivolts, 11_500)
+        XCTAssertEqual(instantZero.currentMilliamps, 0)
 
-        let amperage = BatteryStatusParser.powerReading(registryProperties: [
+        // 12.6 V × 2.5 A = 31.5 W from InstantAmperage. Adapter watts stay unused.
+        let instant = BatteryStatusParser.powerReading(registryProperties: [
             "Voltage": 12_600,
-            "Amperage": 2_500,
+            "InstantAmperage": 2_500,
             "AdapterDetails": NSDictionary(dictionary: ["Watts": 45])
         ])
-        XCTAssertEqual(amperage.voltageMillivolts, 12_600)
-        XCTAssertEqual(amperage.currentMilliamps, 2_500)
-        XCTAssertEqual(amperage.adapterWatts, 45)
-
-        // 12.6 V × 2.5 A = 31.5 W. Adapter watts stay unused.
-        let status = BatteryStatusParser.parse(charging(), power: amperage)
+        let status = BatteryStatusParser.parse(charging(), power: instant)
         XCTAssertEqual(status?.chargeWatts ?? -1, 31.5, accuracy: 0.001)
         XCTAssertEqual(status?.sourceCaption, "Charging · 31.5 W")
+
+        // Amperage is not used. Current is missing, so the adapter tier fills in.
+        let amperageOnly = BatteryStatusParser.parse(charging(), power: BatteryStatusParser.powerReading(registryProperties: [
+            "Voltage": 12_600,
+            "Amperage": 2_500,
+            "AdapterDetails": ["Watts": 45]
+        ]))
+        XCTAssertEqual(amperageOnly?.sourceCaption, "Charging · 45 W")
 
         let iopsCurrent = BatteryStatusParser.parse(charging(current: 2_000), power: preferred)
         // IOPS current wins over InstantAmperage. 12_600 mV × 2_000 mA = 25.2 W.

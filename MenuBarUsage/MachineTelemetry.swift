@@ -167,9 +167,7 @@ enum BatteryStatusParser {
         } else {
             minutes = nil
         }
-        let transport = description[kIOPSTransportTypeKey as String] as? String
-        let registry = (transport == nil || transport == (kIOPSInternalType as String)) ? power : .empty
-        let watts = charging ? chargeWatts(iops: description, registry: registry) : nil
+        let watts = charging ? chargeWatts(iops: description, registry: power) : nil
         return BatteryStatus(
             percent: percent,
             source: source,
@@ -178,36 +176,35 @@ enum BatteryStatusParser {
         )
     }
 
-    /// Volts and amps from an `AppleSmartBattery` registry snapshot.
-    /// `InstantAmperage` wins over `Amperage` when that key is present, including 0.
+    /// `Voltage` (mV) and `InstantAmperage` (mA) from an AppleSmartBattery snapshot.
     static func powerReading(registryProperties: [String: Any]) -> ChargePowerReading {
-        let voltage = positive(registryProperties["Voltage"])
-            ?? positive(registryProperties["AppleRawBatteryVoltage"])
-        let current = sample(registryProperties["InstantAmperage"])
-            ?? sample(registryProperties["Amperage"])
-        return ChargePowerReading(
-            voltageMillivolts: voltage,
-            currentMilliamps: current,
+        ChargePowerReading(
+            voltageMillivolts: positive(registryProperties["Voltage"]),
+            currentMilliamps: sample(registryProperties["InstantAmperage"]),
             adapterWatts: adapterWatts(registryProperties["AdapterDetails"])
         )
     }
 
-    /// Instantaneous charge power is voltage (mV) × current (mA) / 1_000_000.
+    /// Instantaneous charge power is voltage (mV) × current (mA) / 1_000_000
+    /// when current is positive.
     ///
-    /// Current is the IOPS `Current` key when that key is present (0 included).
-    /// Voltage is IOPS `Voltage` when it is positive; otherwise AppleSmartBattery
-    /// `Voltage`, then `AppleRawBatteryVoltage`. When IOPS has no `Current` key,
-    /// current is `InstantAmperage`, then `Amperage`. `AdapterDetails.Watts` is
-    /// the negotiated adapter tier and is used only when voltage or current is
-    /// missing, so that product cannot be formed. A formed product that is about
-    /// 0 W or above a laptop charge rate stays unset, and the caption is
-    /// `Charging` with no number. Registry values apply to the internal battery
-    /// (or a source that does not name a transport).
+    /// Current is the IOPS `Current` key when that key yields a finite sample
+    /// (0 included); otherwise AppleSmartBattery `InstantAmperage`. Voltage is
+    /// IOPS `Voltage` when it is positive; otherwise AppleSmartBattery `Voltage`.
+    /// `AdapterDetails.Watts` is the negotiated adapter tier and is used only
+    /// when voltage or current is missing, so the product cannot be formed.
+    /// A present current that is not positive, or a formed product that is
+    /// about 0 W or above a laptop charge rate, stays unset and the caption
+    /// is `Charging` with no number.
     private static func chargeWatts(iops: [String: Any], registry: ChargePowerReading) -> Double? {
         let voltage = positive(iops[kIOPSVoltageKey as String]) ?? registry.voltageMillivolts
         let current = sample(iops[kIOPSCurrentKey as String]) ?? registry.currentMilliamps
-        if let voltage, let current {
-            return ChargeWatts.displayWatts(voltage * abs(current) / 1_000_000)
+        if let current {
+            if current <= 0 { return nil }
+            guard let voltage else {
+                return registry.adapterWatts.flatMap(ChargeWatts.displayWatts)
+            }
+            return ChargeWatts.displayWatts(voltage * current / 1_000_000)
         }
         return registry.adapterWatts.flatMap(ChargeWatts.displayWatts)
     }
@@ -373,15 +370,12 @@ enum DiskSampler {
     }
 }
 
-/// Five AppleSmartBattery keys for charge watts. Read while any source is charging.
-/// `Voltage` / `AppleRawBatteryVoltage` are mV. `InstantAmperage` / `Amperage` are mA.
-/// `AdapterDetails` is the negotiated adapter.
+/// AppleSmartBattery keys for charge watts, read while any source is charging.
+/// `Voltage` is mV. `InstantAmperage` is mA. `AdapterDetails` is the negotiated adapter.
 enum SmartBatteryPower {
     private static let keys = [
         "Voltage",
-        "AppleRawBatteryVoltage",
         "InstantAmperage",
-        "Amperage",
         "AdapterDetails"
     ]
 
