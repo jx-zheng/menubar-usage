@@ -909,20 +909,6 @@ final class MachineTelemetryTests: XCTestCase {
         // IOPS current wins over InstantAmperage. 12_600 mV × 2_000 mA = 25.2 W.
         XCTAssertEqual(iopsCurrent?.sourceCaption, "Charging · 25.2 W")
 
-        XCTAssertTrue(BatteryStatusParser.needsSmartBattery([charging()]))
-        XCTAssertFalse(BatteryStatusParser.needsSmartBattery([
-            charging(extra: ["Voltage": 12_000, "Current": 5_338])
-        ]))
-        XCTAssertFalse(BatteryStatusParser.needsSmartBattery([[
-            "Is Charging": false,
-            "Power Source State": "Battery Power",
-            "Transport Type": "Internal"
-        ]]))
-        XCTAssertFalse(BatteryStatusParser.needsSmartBattery([[
-            "Is Charging": true,
-            "Transport Type": "USB"
-        ]]))
-
         let chosen = BatteryStatusParser.choose([
             [
                 "Current Capacity": 10,

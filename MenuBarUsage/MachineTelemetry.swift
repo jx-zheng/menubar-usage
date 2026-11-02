@@ -115,9 +115,9 @@ private enum ChargeWatts {
     private static let posix = Locale(identifier: "en_US_POSIX")
 
     static func displayWatts(_ watts: Double) -> Double? {
-        guard watts.isFinite, watts > 0, watts <= maximum else { return nil }
+        guard watts > 0, watts <= maximum else { return nil }
         let tenths = (watts * 10).rounded() / 10
-        guard tenths > 0, tenths <= maximum else { return nil }
+        guard tenths > 0 else { return nil }
         return tenths
     }
 
@@ -147,19 +147,6 @@ enum BatteryStatusParser {
             return (status, transport == (kIOPSInternalType as String))
         }
         return parsed.first(where: \.1)?.0 ?? parsed.first?.0
-    }
-
-    /// True when a charging internal battery still needs AppleSmartBattery.
-    /// IOPS voltage and current are enough on their own, so the registry is skipped then.
-    static func needsSmartBattery(_ descriptions: [[String: Any]]) -> Bool {
-        descriptions.contains { description in
-            guard boolValue(description[kIOPSIsChargingKey as String]) == true else { return false }
-            let transport = description[kIOPSTransportTypeKey as String] as? String
-            guard transport == nil || transport == (kIOPSInternalType as String) else { return false }
-            let hasVoltage = positive(description[kIOPSVoltageKey as String]) != nil
-            let hasCurrent = sample(description[kIOPSCurrentKey as String]).number != nil
-            return !hasVoltage || !hasCurrent
-        }
     }
 
     static func parse(_ description: [String: Any], power: ChargePowerReading = .empty) -> BatteryStatus? {
@@ -196,13 +183,8 @@ enum BatteryStatusParser {
     static func powerReading(registryProperties: [String: Any]) -> ChargePowerReading {
         let voltage = positive(registryProperties["Voltage"])
             ?? positive(registryProperties["AppleRawBatteryVoltage"])
-        let current: Double?
-        switch sample(registryProperties["InstantAmperage"]) {
-        case .value(let value):
-            current = value
-        case .missing:
-            current = sample(registryProperties["Amperage"]).number
-        }
+        let current = sample(registryProperties["InstantAmperage"])
+            ?? sample(registryProperties["Amperage"])
         return ChargePowerReading(
             voltageMillivolts: voltage,
             currentMilliamps: current,
@@ -222,40 +204,23 @@ enum BatteryStatusParser {
     /// `Charging` with no number. Registry values apply to the internal battery
     /// (or a source that does not name a transport).
     private static func chargeWatts(iops: [String: Any], registry: ChargePowerReading) -> Double? {
-        let voltage = positive(iops[kIOPSVoltageKey as String]) ?? registry.voltageMillivolts.flatMap { positive($0) }
-        let current: Double?
-        switch sample(iops[kIOPSCurrentKey as String]) {
-        case .value(let value):
-            current = value
-        case .missing:
-            current = registry.currentMilliamps
-        }
+        let voltage = positive(iops[kIOPSVoltageKey as String]) ?? registry.voltageMillivolts
+        let current = sample(iops[kIOPSCurrentKey as String]) ?? registry.currentMilliamps
         if let voltage, let current {
             return ChargeWatts.displayWatts(voltage * abs(current) / 1_000_000)
         }
         return registry.adapterWatts.flatMap(ChargeWatts.displayWatts)
     }
 
-    private enum NumericSample {
-        case missing
-        case value(Double)
-
-        var number: Double? {
-            switch self {
-            case .missing: return nil
-            case .value(let value): return value
-            }
-        }
-    }
-
-    private static func sample(_ value: Any?) -> NumericSample {
-        guard let number = number(value), number.isFinite else { return .missing }
-        return .value(number)
+    /// Finite reading, including 0. Nil when the value is missing or not finite,
+    /// so a present 0 still wins over a fallback (`0 ?? other` stays 0).
+    private static func sample(_ value: Any?) -> Double? {
+        guard let number = number(value), number.isFinite else { return nil }
+        return number
     }
 
     private static func positive(_ value: Any?) -> Double? {
-        guard case .value(let number) = sample(value), number > 0 else { return nil }
-        return number
+        sample(value).flatMap { $0 > 0 ? $0 : nil }
     }
 
     private static func adapterWatts(_ value: Any?) -> Double? {
@@ -279,7 +244,7 @@ enum BatteryStatusParser {
         }
     }
 
-    private static func boolValue(_ value: Any?) -> Bool? {
+    fileprivate static func boolValue(_ value: Any?) -> Bool? {
         switch value {
         case let value as Bool: return value
         case let value as Int: return value != 0
@@ -408,9 +373,9 @@ enum DiskSampler {
     }
 }
 
-/// AppleSmartBattery keys used when a charging internal battery has no IOPS
-/// voltage or current. `Voltage` / `AppleRawBatteryVoltage` are mV.
-/// `InstantAmperage` / `Amperage` are mA. `AdapterDetails` is the negotiated adapter.
+/// Five AppleSmartBattery keys for charge watts. Read while any source is charging.
+/// `Voltage` / `AppleRawBatteryVoltage` are mV. `InstantAmperage` / `Amperage` are mA.
+/// `AdapterDetails` is the negotiated adapter.
 enum SmartBatteryPower {
     private static let keys = [
         "Voltage",
@@ -482,7 +447,10 @@ enum BatterySampler {
             }
             return description as? [String: Any]
         }
-        let power = BatteryStatusParser.needsSmartBattery(descriptions) ? SmartBatteryPower.read() : .empty
+        let charging = descriptions.contains {
+            BatteryStatusParser.boolValue($0[kIOPSIsChargingKey as String]) == true
+        }
+        let power = charging ? SmartBatteryPower.read() : .empty
         return BatteryStatusParser.choose(descriptions, power: power)
     }
 }
