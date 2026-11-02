@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import SystemConfiguration
+import IOKit
 import IOKit.ps
 
 struct LinkReading: Equatable {
@@ -75,8 +76,19 @@ enum BatterySource: Equatable {
 struct BatteryStatus: Equatable {
     var percent: Double
     var source: BatterySource
-    var minutesRemaining: Int?
+    var minutesRemaining: Int? = nil
+    /// Instantaneous charge power in watts, only while charging and only when a reading exists.
+    var chargeWatts: Double? = nil
 
+    /// First caption under the percent: source, with watts while charging when known.
+    var sourceCaption: String {
+        guard source == .charging, let chargeWatts, let watts = ChargeWatts.text(chargeWatts) else {
+            return source.label
+        }
+        return "Charging · \(watts)"
+    }
+
+    /// Second caption. Time remaining only when the system reported it.
     var timeCaption: String? {
         guard let minutesRemaining, minutesRemaining > 0 else { return nil }
         let duration = Self.duration(minutesRemaining)
@@ -96,17 +108,61 @@ struct BatteryStatus: Equatable {
     }
 }
 
+/// One decimal, matching `UsageFormatting.percent`. A trailing .0 is omitted.
+/// About 0 W, and anything above a laptop charge rate, is left unset.
+private enum ChargeWatts {
+    static let maximum = 300.0
+    private static let posix = Locale(identifier: "en_US_POSIX")
+
+    static func displayWatts(_ watts: Double) -> Double? {
+        guard watts.isFinite, watts > 0, watts <= maximum else { return nil }
+        let tenths = (watts * 10).rounded() / 10
+        guard tenths > 0, tenths <= maximum else { return nil }
+        return tenths
+    }
+
+    static func text(_ watts: Double) -> String? {
+        guard let tenths = displayWatts(watts) else { return nil }
+        if abs(tenths - tenths.rounded()) < 0.001 {
+            return "\(Int(tenths.rounded())) W"
+        }
+        return String(format: "%.1f", locale: posix, tenths) + " W"
+    }
+}
+
+struct ChargePowerReading: Equatable {
+    var voltageMillivolts: Double? = nil
+    var currentMilliamps: Double? = nil
+    /// `AdapterDetails.Watts`: negotiated adapter capability, not instantaneous draw.
+    var adapterWatts: Double? = nil
+
+    static let empty = ChargePowerReading()
+}
+
 enum BatteryStatusParser {
-    static func choose(_ descriptions: [[String: Any]]) -> BatteryStatus? {
+    static func choose(_ descriptions: [[String: Any]], power: ChargePowerReading = .empty) -> BatteryStatus? {
         let parsed: [(BatteryStatus, Bool)] = descriptions.compactMap { description in
-            guard let status = parse(description) else { return nil }
+            guard let status = parse(description, power: power) else { return nil }
             let transport = description[kIOPSTransportTypeKey as String] as? String
             return (status, transport == (kIOPSInternalType as String))
         }
         return parsed.first(where: \.1)?.0 ?? parsed.first?.0
     }
 
-    static func parse(_ description: [String: Any]) -> BatteryStatus? {
+    /// True when a charging internal battery still needs AppleSmartBattery.
+    /// IOPS voltage and current are enough on their own, so the registry is skipped then.
+    static func needsSmartBattery(_ descriptions: [[String: Any]]) -> Bool {
+        descriptions.contains { description in
+            guard boolValue(description[kIOPSIsChargingKey as String]) == true else { return false }
+            let transport = description[kIOPSTransportTypeKey as String] as? String
+            guard transport == nil || transport == (kIOPSInternalType as String) else { return false }
+            let hasVoltage = positive(description[kIOPSVoltageKey as String]) != nil
+            let hasCurrent = sample(description[kIOPSCurrentKey as String]).number != nil
+            return !hasVoltage || !hasCurrent
+        }
+    }
+
+    static func parse(_ description: [String: Any], power: ChargePowerReading = .empty) -> BatteryStatus? {
         if boolValue(description[kIOPSIsPresentKey as String]) == false { return nil }
         guard let current = number(description[kIOPSCurrentCapacityKey as String]),
               let maximum = number(description[kIOPSMaxCapacityKey as String]),
@@ -124,7 +180,96 @@ enum BatteryStatusParser {
         } else {
             minutes = nil
         }
-        return BatteryStatus(percent: percent, source: source, minutesRemaining: minutes)
+        let transport = description[kIOPSTransportTypeKey as String] as? String
+        let registry = (transport == nil || transport == (kIOPSInternalType as String)) ? power : .empty
+        let watts = charging ? chargeWatts(iops: description, registry: registry) : nil
+        return BatteryStatus(
+            percent: percent,
+            source: source,
+            minutesRemaining: minutes,
+            chargeWatts: watts
+        )
+    }
+
+    /// Volts and amps from an `AppleSmartBattery` registry snapshot.
+    /// `InstantAmperage` wins over `Amperage` when that key is present, including 0.
+    static func powerReading(registryProperties: [String: Any]) -> ChargePowerReading {
+        let voltage = positive(registryProperties["Voltage"])
+            ?? positive(registryProperties["AppleRawBatteryVoltage"])
+        let current: Double?
+        switch sample(registryProperties["InstantAmperage"]) {
+        case .value(let value):
+            current = value
+        case .missing:
+            current = sample(registryProperties["Amperage"]).number
+        }
+        return ChargePowerReading(
+            voltageMillivolts: voltage,
+            currentMilliamps: current,
+            adapterWatts: adapterWatts(registryProperties["AdapterDetails"])
+        )
+    }
+
+    /// Instantaneous charge power is voltage (mV) × current (mA) / 1_000_000.
+    ///
+    /// Current is the IOPS `Current` key when that key is present (0 included).
+    /// Voltage is IOPS `Voltage` when it is positive; otherwise AppleSmartBattery
+    /// `Voltage`, then `AppleRawBatteryVoltage`. When IOPS has no `Current` key,
+    /// current is `InstantAmperage`, then `Amperage`. `AdapterDetails.Watts` is
+    /// the negotiated adapter tier and is used only when voltage and current do
+    /// not produce a plausible power. About 0 W stays unset so the caption is
+    /// `Charging` with no fabricated number. Registry values apply to the
+    /// internal battery (or a source that does not name a transport).
+    private static func chargeWatts(iops: [String: Any], registry: ChargePowerReading) -> Double? {
+        let voltage = positive(iops[kIOPSVoltageKey as String]) ?? finitePositive(registry.voltageMillivolts)
+        let current: Double?
+        switch sample(iops[kIOPSCurrentKey as String]) {
+        case .value(let value):
+            current = value
+        case .missing:
+            current = registry.currentMilliamps
+        }
+        if let voltage, let current {
+            let instant = voltage * abs(current) / 1_000_000
+            if instant.isFinite, instant >= 0, instant <= ChargeWatts.maximum {
+                return ChargeWatts.displayWatts(instant)
+            }
+        }
+        return registry.adapterWatts.flatMap(ChargeWatts.displayWatts)
+    }
+
+    private enum NumericSample {
+        case missing
+        case value(Double)
+
+        var number: Double? {
+            switch self {
+            case .missing: return nil
+            case .value(let value): return value
+            }
+        }
+    }
+
+    private static func sample(_ value: Any?) -> NumericSample {
+        guard let number = number(value), number.isFinite else { return .missing }
+        return .value(number)
+    }
+
+    private static func positive(_ value: Any?) -> Double? {
+        guard case .value(let number) = sample(value), number > 0 else { return nil }
+        return number
+    }
+
+    private static func finitePositive(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
+    }
+
+    private static func adapterWatts(_ value: Any?) -> Double? {
+        // Swift dictionaries are not covariant, so a `[String: Int]` payload
+        // does not cast to `[String: Any]`. NSDictionary bridging covers both.
+        guard let details = value as? NSDictionary else { return nil }
+        return positive(details["Watts"])
     }
 
     private static func minutesRemaining(_ value: Any?) -> Int? {
@@ -239,16 +384,23 @@ struct DiskStatus: Equatable, Sendable {
         Double(usedBytes) / Double(totalBytes) * 100
     }
 
+    /// Free space only, in the Finder units `ByteText.fileString` already uses.
     var freeCaption: String {
-        "\(ByteText.fileString(freeBytes)) free of \(ByteText.fileString(totalBytes))"
+        "\(ByteText.fileString(freeBytes)) free"
+    }
+
+    /// Used space against the volume size.
+    var usedCaption: String {
+        "\(ByteText.fileString(usedBytes)) used of \(ByteText.fileString(totalBytes))"
     }
 }
 
 /// Startup volume (`/`), which is the internal disk on a Mac that boots from it.
 ///
-/// `volumeAvailableCapacityForImportantUsage` is the free space Finder shows,
-/// including space it can purge. That value is not cached, so the caller reads
-/// it off the main thread and only on the slow cadence.
+/// Free space is `volumeAvailableCapacityForImportantUsage` only — the figure
+/// Finder shows, including space it can purge. That value is not cached, so
+/// the caller reads it off the main thread and only on the slow cadence.
+/// A nil result leaves the last good sample.
 enum DiskSampler {
     static func read() -> DiskStatus? {
         let volume = URL(fileURLWithPath: "/")
@@ -260,6 +412,32 @@ enum DiskSampler {
               let total = values.volumeTotalCapacity, total > 0,
               let free = values.volumeAvailableCapacityForImportantUsage, free >= 0 else { return nil }
         return DiskStatus(freeBytes: UInt64(free), totalBytes: UInt64(total))
+    }
+}
+
+/// AppleSmartBattery properties used when a charging internal battery has no
+/// IOPS voltage or current. `Voltage` is mV and `Current` / `InstantAmperage` are mA.
+enum SmartBatteryPower {
+    static func read() -> ChargePowerReading {
+        let service = IOServiceGetMatchingService(
+            kIOMainPortDefault,
+            IOServiceMatching("AppleSmartBattery")
+        )
+        guard service != IO_OBJECT_NULL else { return .empty }
+        defer { IOObjectRelease(service) }
+
+        var properties: Unmanaged<CFMutableDictionary>?
+        let result = IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0)
+        guard result == KERN_SUCCESS, let raw = properties?.takeRetainedValue() as NSDictionary? else {
+            return .empty
+        }
+        var parsed: [String: Any] = [:]
+        parsed.reserveCapacity(raw.count)
+        for key in raw.allKeys {
+            guard let key = key as? String, let value = raw.object(forKey: key) else { continue }
+            parsed[key] = value
+        }
+        return BatteryStatusParser.powerReading(registryProperties: parsed)
     }
 }
 
@@ -296,7 +474,8 @@ enum BatterySampler {
             }
             return description as? [String: Any]
         }
-        return BatteryStatusParser.choose(descriptions)
+        let power = BatteryStatusParser.needsSmartBattery(descriptions) ? SmartBatteryPower.read() : .empty
+        return BatteryStatusParser.choose(descriptions, power: power)
     }
 }
 
